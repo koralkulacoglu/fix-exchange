@@ -25,7 +25,7 @@ bool OrderBook::cancel(const std::string& order_id) {
             std::queue<Order> kept;
             bool found = false;
             while (!q.empty()) {
-                if (!found && q.front().order_id == order_id)
+                if (!found && q.front().exchange_id == order_id)
                     found = true;
                 else
                     kept.push(q.front());
@@ -78,7 +78,7 @@ void OrderBook::try_match(Order& aggressor) {
 Fill OrderBook::make_fill(const Order& order, double price, int qty, int leaves) const {
     return Fill{
         symbol_ + "-" + std::to_string(++const_cast<OrderBook*>(this)->exec_seq_),
-        order.order_id,
+        order.exchange_id,
         order.client_id,
         symbol_,
         order.side,

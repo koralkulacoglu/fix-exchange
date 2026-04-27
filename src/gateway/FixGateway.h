@@ -8,6 +8,7 @@
 #include <quickfix/fix42/ExecutionReport.h>
 #include <quickfix/fix42/NewOrderSingle.h>
 #include <quickfix/fix42/OrderCancelRequest.h>
+#include <atomic>
 #include <mutex>
 #include <set>
 
@@ -44,9 +45,12 @@ private:
     engine::MatchingEngine& engine_;
     market_data::MarketDataPublisher& publisher_;
 
+    std::atomic<int> order_seq_{0};
+
     std::mutex orders_mutex_;
-    std::unordered_map<std::string, FIX::SessionID>   order_sessions_;
-    std::unordered_map<std::string, engine::Order>    active_orders_;
+    std::unordered_map<std::string, FIX::SessionID>   order_sessions_;   // exchange_id → session
+    std::unordered_map<std::string, engine::Order>    active_orders_;    // exchange_id → order
+    std::unordered_map<std::string, std::string>      clord_to_exchange_; // clord_id → exchange_id
 };
 
 } // namespace gateway

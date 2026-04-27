@@ -4,25 +4,26 @@
 namespace engine {
 
 struct Order {
-    std::string order_id;
-    std::string client_id;  // FIX SenderCompID
+    std::string clord_id;      // FIX tag 11 — client-assigned reference
+    std::string exchange_id;   // FIX tag 37 — exchange-assigned, e.g. "EXCH-1"
+    std::string client_id;     // FIX SenderCompID
     std::string symbol;
-    char side;              // '1' buy, '2' sell
-    char type;              // '1' market, '2' limit
+    char side;                 // '1' buy, '2' sell
+    char type;                 // '1' market, '2' limit
     double price;
     int qty;
     int leaves_qty;
 };
 
 struct CancelRequest {
-    std::string orig_order_id;
+    std::string orig_order_id; // exchange_id of the order to cancel (resolved by gateway)
     std::string client_id;
     std::string symbol;
 };
 
 struct Fill {
     std::string exec_id;
-    std::string order_id;
+    std::string exchange_id;   // exchange_id of the filled order
     std::string client_id;
     std::string symbol;
     char side;

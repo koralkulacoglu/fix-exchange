@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
 from test_exchange import FixSession  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# ExecType / OrdStatus / Side labels
+# Labels
 # ---------------------------------------------------------------------------
 
 EXEC_TYPE = {
@@ -66,9 +66,10 @@ class ClientSession(FixSession):
         return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H:%M:%S")
 
     def send_order(self, symbol, side, qty, price=None):
-        ord_id = self._next_order_id()
+        """Send a NewOrderSingle, wait for the New ack, return (clord_id, exchange_id)."""
+        clord_id = self._next_order_id()
         fields = {
-            "11": ord_id,
+            "11": clord_id,
             "21": "1",
             "55": symbol,
             "54": side,
@@ -79,13 +80,20 @@ class ClientSession(FixSession):
         if price is not None:
             fields["44"] = f"{price:.2f}"
         self.send("D", fields)
-        return ord_id
 
-    def send_cancel(self, orig_order_id, symbol, side, qty):
+        # The exchange sends the New ack before submitting to the engine,
+        # so the first message back is always the ack.
+        ack = self.recv()
+        _print_exec(ack)
+        exchange_id = ack.get("37", clord_id)
+        return clord_id, exchange_id
+
+    def send_cancel(self, clord_id, exchange_id, symbol, side, qty):
+        """Send an OrderCancelRequest. OrigClOrdID (tag 41) = clord_id per FIX spec."""
         self._cancel_counter += 1
         fields = {
-            "41": orig_order_id,
-            "11": f"{orig_order_id}-CXL{self._cancel_counter}",
+            "41": clord_id,
+            "11": f"{exchange_id}-CXL{self._cancel_counter}",
             "55": symbol,
             "54": side,
             "38": str(qty),
@@ -94,22 +102,18 @@ class ClientSession(FixSession):
         self.send("F", fields)
 
     def recv_print(self, timeout=2.0):
+        """Drain and print inbound messages until timeout."""
         self.sock.settimeout(timeout)
         try:
             while True:
                 msg = self.recv()
                 msg_type = msg.get("35", "")
-
                 if msg_type in ("0", "1", "2", "5"):
-                    # Heartbeat, TestRequest, ResendRequest, Logout — skip
                     continue
-
                 if msg_type == "8":
                     _print_exec(msg)
-
                 elif msg_type == "X":
                     _print_mktdata(msg)
-
         except socket.timeout:
             pass
         finally:
@@ -133,7 +137,7 @@ def _print_exec(msg):
     except (ValueError, TypeError):
         price_str = f"@ {'?':>8}"
 
-    print(f"[EXEC]    {clord:<10}  {symbol:<6}  {side:<5}  {qty:>6}  {price_str}  {status}")
+    print(f"[EXEC]  {clord:<10}  {symbol:<6}  {side:<5}  {qty:>6}  {price_str}  {status}")
 
 
 def _print_mktdata(msg):
@@ -151,7 +155,6 @@ def _print_mktdata(msg):
 # ---------------------------------------------------------------------------
 
 def _parse(line):
-    """Return (action, args_dict) or (None, error_string)."""
     tokens = line.strip().split()
     if not tokens:
         return None, None
@@ -167,11 +170,10 @@ def _parse(line):
     if cmd == "cancel":
         if len(tokens) != 2:
             return None, "Usage: cancel <ORDER-ID>"
-        return "cancel", {"orig_order_id": tokens[1]}
+        return "cancel", {"clord_id": tokens[1]}
 
     if cmd in ("buy", "sell"):
         side = "1" if cmd == "buy" else "2"
-        # buy AAPL 100 @ 150.00   or   buy AAPL 100 market
         if len(tokens) < 3:
             return None, f"Usage: {cmd} <SYMBOL> <QTY> @ <PRICE>  or  {cmd} <SYMBOL> <QTY> market"
         symbol = tokens[1].upper()
@@ -195,22 +197,28 @@ def _parse(line):
 
 
 # ---------------------------------------------------------------------------
-# Order book for cancel lookup
+# Order tracker
 # ---------------------------------------------------------------------------
 
 class OrderTracker:
-    """Remembers open orders so 'cancel CLI-3' can fill in symbol/side/qty."""
+    """Maps exchange_id → {clord_id, symbol, side, qty} for cancel lookup."""
     def __init__(self):
-        self._orders = {}  # order_id → {symbol, side, qty}
+        self._orders = {}
 
-    def track(self, order_id, symbol, side, qty):
-        self._orders[order_id] = {"symbol": symbol, "side": side, "qty": qty}
+    def track(self, exchange_id, clord_id, symbol, side, qty):
+        self._orders[clord_id] = {
+            "clord_id": clord_id,
+            "exchange_id": exchange_id,
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+        }
 
-    def get(self, order_id):
-        return self._orders.get(order_id)
+    def get(self, clord_id):
+        return self._orders.get(clord_id)
 
-    def remove(self, order_id):
-        self._orders.pop(order_id, None)
+    def remove(self, clord_id):
+        self._orders.pop(clord_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -242,20 +250,20 @@ def repl(session, tracker):
             break
 
         if action == "order":
-            order_id = session.send_order(
+            clord_id, exchange_id = session.send_order(
                 args["symbol"], args["side"], args["qty"], args["price"]
             )
-            tracker.track(order_id, args["symbol"], args["side"], args["qty"])
+            tracker.track(exchange_id, clord_id, args["symbol"], args["side"], args["qty"])
             session.recv_print()
 
         if action == "cancel":
-            oid = args["orig_order_id"]
-            info = tracker.get(oid)
+            cid = args["clord_id"]
+            info = tracker.get(cid)
             if info is None:
-                print(f"  Unknown order '{oid}'. Only orders placed in this session can be canceled.")
+                print(f"  Unknown order '{cid}'. Only orders placed in this session can be canceled.")
                 continue
-            session.send_cancel(oid, info["symbol"], info["side"], info["qty"])
-            tracker.remove(oid)
+            session.send_cancel(info["clord_id"], info["exchange_id"], info["symbol"], info["side"], info["qty"])
+            tracker.remove(cid)
             session.recv_print()
 
 

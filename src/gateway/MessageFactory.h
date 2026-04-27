@@ -23,8 +23,8 @@ inline FIX42::ExecutionReport make_exec_report(
     int  cum = fill ? (order.qty - fill->leaves_qty) : 0;
 
     FIX42::ExecutionReport msg(
-        FIX::OrderID(order.order_id),
-        FIX::ExecID(fill ? fill->exec_id : order.order_id + "-ACK"),
+        FIX::OrderID(order.exchange_id),
+        FIX::ExecID(fill ? fill->exec_id : order.exchange_id + "-ACK"),
         FIX::ExecTransType('0'),
         FIX::ExecType(et),
         FIX::OrdStatus(et),
@@ -35,7 +35,7 @@ inline FIX42::ExecutionReport make_exec_report(
         FIX::AvgPx(fill ? fill->price : 0.0)
     );
 
-    msg.set(FIX::ClOrdID(order.order_id));
+    msg.set(FIX::ClOrdID(order.clord_id));
     msg.set(FIX::OrderQty(order.qty));
     if (order.type == '2')
         msg.set(FIX::Price(order.price));
