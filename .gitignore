@@ -24,10 +24,6 @@
 *.so.*
 
 
-# Fortran module files
-*.mod
-*.smod
-
 # Compiled Static libraries
 *.lai
 *.la
@@ -67,3 +63,11 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# QuickFIX runtime directories
+store/
+log/
+
+# Python
+*.pyc
+__pycache__/
