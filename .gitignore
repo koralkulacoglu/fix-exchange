@@ -71,3 +71,6 @@ log/
 # Python
 *.pyc
 __pycache__/
+
+# Claude Code
+.claude/
