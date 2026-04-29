@@ -1,9 +1,37 @@
 #include "MatchingEngine.h"
+#include <algorithm>
+#include <cctype>
 
 namespace engine {
 
-MatchingEngine::MatchingEngine(FillCallback on_fill, CancelCallback on_cancel)
-    : on_fill_(std::move(on_fill)), on_cancel_(std::move(on_cancel)) {}
+MatchingEngine::MatchingEngine(FillCallback on_fill, CancelCallback on_cancel,
+                               std::vector<std::string> symbols)
+    : on_fill_(std::move(on_fill)), on_cancel_(std::move(on_cancel)) {
+    for (const auto& sym : symbols) {
+        valid_symbols_.insert(sym);
+        books_.emplace(sym, OrderBook(sym, on_fill_));
+    }
+}
+
+bool MatchingEngine::registerSymbol(const std::string& symbol) {
+    if (symbol.empty() || symbol.size() > 8)
+        return false;
+    for (char c : symbol)
+        if (!std::isalnum(static_cast<unsigned char>(c)))
+            return false;
+
+    std::lock_guard<std::mutex> lock(symbols_mutex_);
+    if (valid_symbols_.count(symbol))
+        return false;
+    valid_symbols_.insert(symbol);
+    books_.emplace(symbol, OrderBook(symbol, on_fill_));
+    return true;
+}
+
+bool MatchingEngine::isValidSymbol(const std::string& symbol) const {
+    std::lock_guard<std::mutex> lock(symbols_mutex_);
+    return valid_symbols_.count(symbol) > 0;
+}
 
 MatchingEngine::~MatchingEngine() { stop(); }
 
@@ -63,12 +91,9 @@ void MatchingEngine::run() {
 }
 
 OrderBook& MatchingEngine::book_for(const std::string& symbol) {
+    std::lock_guard<std::mutex> lock(symbols_mutex_);
     auto it = books_.find(symbol);
-    if (it == books_.end()) {
-        books_.emplace(symbol, OrderBook(symbol, on_fill_));
-        return books_.at(symbol);
-    }
-    return it->second;
+    return it->second; // symbol is always pre-allocated; validated upstream
 }
 
 } // namespace engine

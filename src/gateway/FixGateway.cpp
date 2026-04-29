@@ -53,6 +53,13 @@ void FixGateway::onMessage(const FIX42::NewOrderSingle& msg, const FIX::SessionI
         order.price = 0.0;
     }
 
+    if (!engine_.isValidSymbol(order.symbol)) {
+        auto reject = make_exec_report(order, ExecType::Rejected);
+        reject.set(FIX::Text("Unknown symbol"));
+        FIX::Session::sendToTarget(reject, session_id);
+        return;
+    }
+
     {
         std::lock_guard<std::mutex> lock(orders_mutex_);
         order_sessions_.emplace(order.exchange_id, session_id);

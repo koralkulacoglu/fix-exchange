@@ -265,6 +265,83 @@ def test_order_cancel():
     s.close()
 
 
+ADMIN_PORT = 5002
+
+
+def admin_send(command: str) -> str:
+    """Send a single command to the admin port and return the response line."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(3)
+    sock.connect(("127.0.0.1", ADMIN_PORT))
+    sock.sendall((command + "\n").encode("ascii"))
+    resp = b""
+    while b"\n" not in resp:
+        chunk = sock.recv(256)
+        if not chunk:
+            break
+        resp += chunk
+    sock.close()
+    return resp.decode("ascii").strip()
+
+
+def test_unknown_symbol_rejected():
+    s = FixSession()
+    s.connect()
+    s.logon()
+
+    s.send("D", {
+        "11": "ORD-FAKE",
+        "21": "1",
+        "55": "FAKE",
+        "54": "1",
+        "40": "2",
+        "44": "10.00",
+        "38": "1",
+        "60": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S"),
+    })
+
+    resp = s.recv()
+    assert resp.get("35") == "8", f"Expected ExecutionReport, got {resp.get('35')}"
+    assert resp.get("150") == "8", f"Expected ExecType=Rejected(8), got {resp.get('150')}"
+    assert resp.get("39") == "8", f"Expected OrdStatus=Rejected(8), got {resp.get('39')}"
+    assert "Unknown symbol" in resp.get("58", ""), f"Expected reject reason in tag 58, got {resp.get('58')}"
+
+    s.logout()
+    s.close()
+
+
+def test_admin_register_symbol():
+    # Register a new symbol via admin port
+    resp = admin_send("REGISTER TSLA")
+    assert resp == "OK", f"Expected OK from admin, got: {resp!r}"
+
+    # Attempting to register the same symbol again should fail
+    resp2 = admin_send("REGISTER TSLA")
+    assert resp2.startswith("ERROR"), f"Expected ERROR on duplicate, got: {resp2!r}"
+
+    # Now an order for TSLA should be accepted
+    s = FixSession()
+    s.connect()
+    s.logon()
+
+    s.send("D", {
+        "11": "ORD-TSLA",
+        "21": "1",
+        "55": "TSLA",
+        "54": "1",
+        "40": "2",
+        "44": "200.00",
+        "38": "10",
+        "60": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S"),
+    })
+
+    ack = s.recv()
+    assert ack.get("150") == "0", f"Expected ExecType=New(0) for TSLA order, got {ack.get('150')}"
+
+    s.logout()
+    s.close()
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -287,6 +364,8 @@ def main():
     run("NewOrderSingle → ExecReport(New)", test_new_order_ack)
     run("Matching → two Fill ExecReports + MarketDataRefresh", test_order_match_fills)
     run("OrderCancelRequest → session stays alive", test_order_cancel)
+    run("Unknown symbol → ExecReport(Rejected)", test_unknown_symbol_rejected)
+    run("Admin REGISTER → new symbol accepted", test_admin_register_symbol)
 
     print()
     if failures:

@@ -8,6 +8,8 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace engine {
 
@@ -16,7 +18,8 @@ using CancelCallback = std::function<void(const CancelRequest& req, bool found)>
 
 class MatchingEngine {
 public:
-    MatchingEngine(FillCallback on_fill, CancelCallback on_cancel);
+    MatchingEngine(FillCallback on_fill, CancelCallback on_cancel,
+                   std::vector<std::string> symbols = {});
     ~MatchingEngine();
 
     void start();
@@ -24,6 +27,10 @@ public:
 
     void submit(Order order);
     void cancel(CancelRequest req);
+
+    // Returns false if symbol is already registered or fails validation.
+    bool registerSymbol(const std::string& symbol);
+    bool isValidSymbol(const std::string& symbol) const;
 
 private:
     struct WorkItem {
@@ -38,6 +45,9 @@ private:
     FillCallback   on_fill_;
     CancelCallback on_cancel_;
     std::unordered_map<std::string, OrderBook> books_;
+
+    mutable std::mutex symbols_mutex_;
+    std::unordered_set<std::string> valid_symbols_;
 
     std::queue<WorkItem> queue_;
     std::mutex mutex_;
