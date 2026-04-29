@@ -2,24 +2,48 @@
 """
 Integration tests for fix-exchange.
 
-Connects to the exchange over a raw TCP socket, sends FIX 4.2 messages,
-and asserts on the responses. No external FIX library required.
+Spawns a fresh exchange process, runs all tests against it, and tears it
+down on exit. Requires the binary to be built first:
 
-Usage:
-    # In one terminal:
-    ./build/fix-exchange config/exchange.cfg
+    cmake --build build
 
-    # In another terminal:
+Then run:
+
     python3 tests/test_exchange.py
 """
 
-import socket
-import time
+import atexit
 import datetime
+import socket
+import subprocess
 import sys
+import time
 
 HOST = "127.0.0.1"
 PORT = 5001
+
+EXCHANGE_BIN = "./build/fix-exchange"
+EXCHANGE_CFG = "config/exchange.cfg"
+
+
+def start_exchange():
+    proc = subprocess.Popen(
+        [EXCHANGE_BIN, EXCHANGE_CFG],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    def _cleanup():
+        proc.kill()
+        proc.wait()
+    atexit.register(_cleanup)
+    for _ in range(20):
+        try:
+            socket.create_connection((HOST, PORT), timeout=0.5).close()
+            return proc
+        except OSError:
+            time.sleep(0.2)
+    proc.terminate()
+    raise RuntimeError("Exchange failed to start within 4 seconds")
 SENDER = "CLIENT"
 TARGET = "EXCHANGE"
 SEP = "\x01"
@@ -347,18 +371,8 @@ def test_admin_register_symbol():
 # ---------------------------------------------------------------------------
 
 def main():
-    print(f"\nConnecting to {HOST}:{PORT} …")
-    # Quick connectivity check
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    probe.settimeout(3)
-    try:
-        probe.connect((HOST, PORT))
-        probe.close()
-    except OSError:
-        print(f"ERROR: Cannot connect to {HOST}:{PORT}. Is the exchange running?")
-        print("  Start it with:  ./build/fix-exchange config/exchange.cfg")
-        sys.exit(1)
-
+    print("\nStarting exchange …")
+    start_exchange()
     print("Running FIX integration tests …\n")
     run("Logon / Logout", test_logon_logout)
     run("NewOrderSingle → ExecReport(New)", test_new_order_ack)
