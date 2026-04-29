@@ -7,29 +7,30 @@ namespace engine {
 OrderBook::OrderBook(std::string symbol, FillCallback on_fill)
     : symbol_(std::move(symbol)), on_fill_(std::move(on_fill)) {}
 
-void OrderBook::add(Order order) {
+int OrderBook::add(Order order) {
     order.leaves_qty = order.qty;
     try_match(order);
-    if (order.leaves_qty > 0 && order.type == '2') {
+    if (order.leaves_qty > 0 && order.type == '2' && order.tif != '3') {
         if (order.side == '1')
-            bids_[order.price].push(order);
+            bids_[order.price].push_back(order);
         else
-            asks_[order.price].push(order);
+            asks_[order.price].push_back(order);
     }
+    return order.leaves_qty;
 }
 
 bool OrderBook::cancel(const std::string& order_id) {
     auto scan = [&](auto& levels) {
         for (auto& kv : levels) {
             auto& q = kv.second;
-            std::queue<Order> kept;
+            std::deque<Order> kept;
             bool found = false;
             while (!q.empty()) {
                 if (!found && q.front().exchange_id == order_id)
                     found = true;
                 else
-                    kept.push(q.front());
-                q.pop();
+                    kept.push_back(q.front());
+                q.pop_front();
             }
             q = std::move(kept);
             if (found) return true;
@@ -62,7 +63,7 @@ void OrderBook::match_against(Order& aggressor, BookSide& opposite, bool is_buy)
         on_fill_(maker, taker);
 
         if (resting.leaves_qty == 0)
-            q.pop();
+            q.pop_front();
         if (q.empty())
             opposite.erase(it);
     }
@@ -73,6 +74,22 @@ void OrderBook::try_match(Order& aggressor) {
         match_against(aggressor, asks_, true);
     else
         match_against(aggressor, bids_, false);
+}
+
+int OrderBook::available_to_fill(const Order& order) const {
+    int total = 0;
+    if (order.side == '1') {
+        for (auto& kv : asks_) {
+            if (order.type == '2' && kv.first > order.price) break;
+            for (auto& o : kv.second) total += o.leaves_qty;
+        }
+    } else {
+        for (auto& kv : bids_) {
+            if (order.type == '2' && kv.first < order.price) break;
+            for (auto& o : kv.second) total += o.leaves_qty;
+        }
+    }
+    return total;
 }
 
 Fill OrderBook::make_fill(const Order& order, double price, int qty, int leaves) const {

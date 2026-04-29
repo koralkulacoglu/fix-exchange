@@ -74,6 +74,9 @@ int main(int argc, char* argv[]) {
             [&](const engine::CancelRequest& req, bool found) {
                 if (gw_ptr) gw_ptr->onCancel(req, found);
             },
+            [&](const engine::Order& o) {
+                if (gw_ptr) gw_ptr->onTIFCancel(o);
+            },
             symbols
         );
 

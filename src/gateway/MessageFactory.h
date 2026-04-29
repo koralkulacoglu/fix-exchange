@@ -45,6 +45,32 @@ inline FIX42::ExecutionReport make_exec_report(
     return msg;
 }
 
+inline FIX42::ExecutionReport make_tif_cancel_report(const engine::Order& order)
+{
+    char et  = static_cast<char>(ExecType::Canceled);
+    int  cum = order.qty - order.leaves_qty;
+
+    FIX42::ExecutionReport msg(
+        FIX::OrderID(order.exchange_id),
+        FIX::ExecID(order.exchange_id + "-TIF"),
+        FIX::ExecTransType('0'),
+        FIX::ExecType(et),
+        FIX::OrdStatus(et),
+        FIX::Symbol(order.symbol),
+        FIX::Side(order.side),
+        FIX::LeavesQty(0),
+        FIX::CumQty(cum),
+        FIX::AvgPx(0.0)
+    );
+
+    msg.set(FIX::ClOrdID(order.clord_id));
+    msg.set(FIX::OrderQty(order.qty));
+    if (order.type == '2')
+        msg.set(FIX::Price(order.price));
+
+    return msg;
+}
+
 inline FIX42::MarketDataIncrementalRefresh make_market_data_refresh(
     const engine::Fill& fill)
 {

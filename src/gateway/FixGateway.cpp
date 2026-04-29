@@ -53,6 +53,12 @@ void FixGateway::onMessage(const FIX42::NewOrderSingle& msg, const FIX::SessionI
         order.price = 0.0;
     }
 
+    if (msg.isSetField(FIX::FIELD::TimeInForce)) {
+        FIX::TimeInForce tif; msg.get(tif);
+        char v = tif.getValue();
+        if (v == '3' || v == '4') order.tif = v;
+    }
+
     if (!engine_.isValidSymbol(order.symbol)) {
         auto reject = make_exec_report(order, ExecType::Rejected);
         reject.set(FIX::Text("Unknown symbol"));
@@ -138,6 +144,21 @@ void FixGateway::onFill(const engine::Fill& maker, const engine::Fill& taker) {
     send_fill(maker);
     send_fill(taker);
     publisher_.on_fill(maker);
+}
+
+void FixGateway::onTIFCancel(const engine::Order& order) {
+    FIX::SessionID session_id;
+    {
+        std::lock_guard<std::mutex> lock(orders_mutex_);
+        auto sit = order_sessions_.find(order.exchange_id);
+        if (sit == order_sessions_.end()) return;
+        session_id = sit->second;
+        order_sessions_.erase(sit);
+        active_orders_.erase(order.exchange_id);
+        clord_to_exchange_.erase(order.clord_id);
+    }
+    auto report = make_tif_cancel_report(order);
+    FIX::Session::sendToTarget(report, session_id);
 }
 
 } // namespace gateway

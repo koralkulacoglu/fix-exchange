@@ -5,8 +5,10 @@
 namespace engine {
 
 MatchingEngine::MatchingEngine(FillCallback on_fill, CancelCallback on_cancel,
+                               TIFCancelCallback on_tif_cancel,
                                std::vector<std::string> symbols)
-    : on_fill_(std::move(on_fill)), on_cancel_(std::move(on_cancel)) {
+    : on_fill_(std::move(on_fill)), on_cancel_(std::move(on_cancel)),
+      on_tif_cancel_(std::move(on_tif_cancel)) {
     for (const auto& sym : symbols) {
         valid_symbols_.insert(sym);
         books_.emplace(sym, OrderBook(sym, on_fill_));
@@ -82,7 +84,22 @@ void MatchingEngine::run() {
         lock.unlock();
 
         if (item.tag == WorkItem::ORDER) {
-            book_for(item.order.symbol).add(std::move(item.order));
+            Order order = std::move(item.order);
+            auto& book = book_for(order.symbol);
+            if (order.tif == '4') {
+                if (book.available_to_fill(order) < order.qty) {
+                    order.leaves_qty = order.qty;
+                    if (on_tif_cancel_) on_tif_cancel_(order);
+                } else {
+                    book.add(order);
+                }
+            } else {
+                int leaves = book.add(order);
+                if (order.tif == '3' && leaves > 0) {
+                    order.leaves_qty = leaves;
+                    if (on_tif_cancel_) on_tif_cancel_(order);
+                }
+            }
         } else {
             bool found = book_for(item.cancel_req.symbol).cancel(item.cancel_req.orig_order_id);
             on_cancel_(item.cancel_req, found);

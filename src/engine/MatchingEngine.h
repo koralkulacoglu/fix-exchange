@@ -13,12 +13,14 @@
 
 namespace engine {
 
-using FillCallback   = std::function<void(const Fill& maker, const Fill& taker)>;
-using CancelCallback = std::function<void(const CancelRequest& req, bool found)>;
+using FillCallback      = std::function<void(const Fill& maker, const Fill& taker)>;
+using CancelCallback    = std::function<void(const CancelRequest& req, bool found)>;
+using TIFCancelCallback = std::function<void(const Order& order)>;
 
 class MatchingEngine {
 public:
     MatchingEngine(FillCallback on_fill, CancelCallback on_cancel,
+                   TIFCancelCallback on_tif_cancel = {},
                    std::vector<std::string> symbols = {});
     ~MatchingEngine();
 
@@ -42,8 +44,9 @@ private:
     void run();
     OrderBook& book_for(const std::string& symbol);
 
-    FillCallback   on_fill_;
-    CancelCallback on_cancel_;
+    FillCallback      on_fill_;
+    CancelCallback    on_cancel_;
+    TIFCancelCallback on_tif_cancel_;
     std::unordered_map<std::string, OrderBook> books_;
 
     mutable std::mutex symbols_mutex_;

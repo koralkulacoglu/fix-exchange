@@ -23,6 +23,7 @@ public:
 
     void onFill(const engine::Fill& maker, const engine::Fill& taker);
     void onCancel(const engine::CancelRequest& req, bool found);
+    void onTIFCancel(const engine::Order& order);
 
     // FIX::Application interface
     void onCreate(const FIX::SessionID&) override {}

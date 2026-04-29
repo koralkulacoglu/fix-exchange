@@ -13,6 +13,7 @@ struct Order {
     double price;
     int qty;
     int leaves_qty;
+    char tif{'0'};             // '0'=GTC (default), '3'=IOC, '4'=FOK (FIX tag 59)
 };
 
 struct CancelRequest {
