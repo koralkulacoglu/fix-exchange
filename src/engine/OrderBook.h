@@ -17,6 +17,9 @@ public:
     bool cancel(const std::string& order_id);
     int  available_to_fill(const Order& order) const;
 
+    std::vector<BookLevel> getBids() const;
+    std::vector<BookLevel> getAsks() const;
+
 private:
     void try_match(Order& aggressor);
     template<typename BookSide>

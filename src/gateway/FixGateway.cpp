@@ -15,6 +15,13 @@ FixGateway::FixGateway(engine::MatchingEngine& engine,
 void FixGateway::onLogon(const FIX::SessionID& id) {
     std::cout << "Logon: " << id << "\n";
     publisher_.add_session(id);
+    engine_.requestSnapshot([id](std::vector<engine::BookSnapshot> snaps) {
+        for (const auto& snap : snaps) {
+            if (snap.bids.empty() && snap.asks.empty()) continue;
+            auto msg = gateway::make_market_data_snapshot(snap);
+            FIX::Session::sendToTarget(msg, id);
+        }
+    });
 }
 
 void FixGateway::onLogout(const FIX::SessionID& id) {

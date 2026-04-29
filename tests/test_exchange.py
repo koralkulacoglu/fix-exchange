@@ -94,6 +94,7 @@ class FixSession:
         self.sock.settimeout(5)
         self.seq = 1
         self.buf = b""
+        self.snapshots = []  # 35=W messages buffered during logon
 
     def connect(self):
         self.sock.connect((HOST, PORT))
@@ -123,9 +124,22 @@ class FixSession:
             self.buf += chunk
 
     def logon(self):
+        self.snapshots = []
         self.send("A", {"98": "0", "108": "30"})
         resp = self.recv()
         assert resp.get("35") == "A", f"Expected Logon, got: {resp}"
+        # Drain 35=W snapshots the engine sends right after logon.
+        # Guaranteed to arrive before any order ACK (same work queue).
+        old_timeout = self.sock.gettimeout()
+        self.sock.settimeout(0.3)
+        while True:
+            try:
+                msg = self.recv()
+                if msg.get("35") == "W":
+                    self.snapshots.append(msg)
+            except socket.timeout:
+                break
+        self.sock.settimeout(old_timeout)
         return resp
 
     def logout(self):
@@ -575,6 +589,49 @@ def test_fok_full_fill():
     s.close()
 
 
+def test_market_data_snapshot_on_logon():
+    s = FixSession()
+    s.connect()
+    s.logon()
+
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+
+    # Place two resting bids and one resting ask for GOOG (prices don't cross)
+    for clord, side, price, qty in [
+        ("SNAP-BID1", "1", "150.00", "100"),
+        ("SNAP-BID2", "1", "148.00", "50"),
+        ("SNAP-ASK1", "2", "155.00", "200"),
+    ]:
+        s.send("D", {
+            "11": clord, "21": "1", "55": "GOOG",
+            "54": side, "40": "2", "44": price, "38": qty, "60": now,
+        })
+        ack = s.recv()
+        assert ack.get("150") == "0", f"Expected New ack for {clord}"
+
+    s.logout()
+    s.close()
+
+    # Reconnect — logon() buffers any 35=W snapshots in s2.snapshots
+    s2 = FixSession()
+    s2.connect()
+    s2.logon()
+    snapshots = {m.get("55"): m for m in s2.snapshots}
+
+    assert "GOOG" in snapshots, \
+        f"Expected 35=W snapshot for GOOG on re-logon, received for: {list(snapshots.keys())}"
+    n_entries = int(snapshots["GOOG"].get("268", "0"))
+    assert n_entries == 3, \
+        f"Expected 3 MD entries (2 bids + 1 ask) in GOOG snapshot, got {n_entries}"
+
+    # MSFT and AMZN had all orders filled/cancelled — no snapshot expected
+    assert "MSFT" not in snapshots, "MSFT book is empty; no 35=W expected"
+    assert "AMZN" not in snapshots, "AMZN book is empty; no 35=W expected"
+
+    s2.logout()
+    s2.close()
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -593,6 +650,7 @@ def main():
     run("IOC order → partial fill → PartFill + Canceled", test_ioc_partial_fill)
     run("FOK order → insufficient qty → Canceled, book unchanged", test_fok_insufficient)
     run("FOK order → full qty available → Fill, no Canceled", test_fok_full_fill)
+    run("35=W snapshot on re-logon shows resting orders", test_market_data_snapshot_on_logon)
 
     print()
     if failures:

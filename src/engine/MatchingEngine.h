@@ -16,6 +16,7 @@ namespace engine {
 using FillCallback      = std::function<void(const Fill& maker, const Fill& taker)>;
 using CancelCallback    = std::function<void(const CancelRequest& req, bool found)>;
 using TIFCancelCallback = std::function<void(const Order& order)>;
+using SnapshotCallback  = std::function<void(std::vector<BookSnapshot>)>;
 
 class MatchingEngine {
 public:
@@ -29,6 +30,7 @@ public:
 
     void submit(Order order);
     void cancel(CancelRequest req);
+    void requestSnapshot(SnapshotCallback cb);
 
     // Returns false if symbol is already registered or fails validation.
     bool registerSymbol(const std::string& symbol);
@@ -36,9 +38,10 @@ public:
 
 private:
     struct WorkItem {
-        enum Tag { ORDER, CANCEL } tag;
+        enum Tag { ORDER, CANCEL, SNAPSHOT } tag;
         Order order;
         CancelRequest cancel_req;
+        SnapshotCallback snapshot_cb;
     };
 
     void run();

@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 
 namespace engine {
 
@@ -31,6 +32,17 @@ struct Fill {
     double price;
     int qty;
     int leaves_qty;
+};
+
+struct BookLevel {
+    double price;
+    int qty;
+};
+
+struct BookSnapshot {
+    std::string symbol;
+    std::vector<BookLevel> bids;  // price-descending
+    std::vector<BookLevel> asks;  // price-ascending
 };
 
 } // namespace engine

@@ -2,6 +2,7 @@
 #include "engine/Order.h"
 #include <quickfix/fix42/ExecutionReport.h>
 #include <quickfix/fix42/MarketDataIncrementalRefresh.h>
+#include <quickfix/fix42/MarketDataSnapshotFullRefresh.h>
 #include <string>
 
 namespace gateway {
@@ -82,6 +83,28 @@ inline FIX42::MarketDataIncrementalRefresh make_market_data_refresh(
     group.set(FIX::MDEntryPx(fill.price));
     group.set(FIX::MDEntrySize(fill.qty));
     msg.addGroup(group);
+    return msg;
+}
+
+inline FIX42::MarketDataSnapshotFullRefresh make_market_data_snapshot(
+    const engine::BookSnapshot& snap)
+{
+    FIX42::MarketDataSnapshotFullRefresh msg;
+    msg.set(FIX::Symbol(snap.symbol));
+    for (const auto& level : snap.bids) {
+        FIX42::MarketDataSnapshotFullRefresh::NoMDEntries g;
+        g.set(FIX::MDEntryType('0'));
+        g.set(FIX::MDEntryPx(level.price));
+        g.set(FIX::MDEntrySize(level.qty));
+        msg.addGroup(g);
+    }
+    for (const auto& level : snap.asks) {
+        FIX42::MarketDataSnapshotFullRefresh::NoMDEntries g;
+        g.set(FIX::MDEntryType('1'));
+        g.set(FIX::MDEntryPx(level.price));
+        g.set(FIX::MDEntrySize(level.qty));
+        msg.addGroup(g);
+    }
     return msg;
 }
 

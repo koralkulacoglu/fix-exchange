@@ -62,6 +62,17 @@ void MatchingEngine::submit(Order order) {
     cv_.notify_one();
 }
 
+void MatchingEngine::requestSnapshot(SnapshotCallback cb) {
+    WorkItem item;
+    item.tag         = WorkItem::SNAPSHOT;
+    item.snapshot_cb = std::move(cb);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.push(std::move(item));
+    }
+    cv_.notify_one();
+}
+
 void MatchingEngine::cancel(CancelRequest req) {
     WorkItem item;
     item.tag        = WorkItem::CANCEL;
@@ -100,9 +111,20 @@ void MatchingEngine::run() {
                     if (on_tif_cancel_) on_tif_cancel_(order);
                 }
             }
-        } else {
+        } else if (item.tag == WorkItem::CANCEL) {
             bool found = book_for(item.cancel_req.symbol).cancel(item.cancel_req.orig_order_id);
             on_cancel_(item.cancel_req, found);
+        } else {
+            std::vector<BookSnapshot> snaps;
+            snaps.reserve(books_.size());
+            for (auto& [sym, book] : books_) {
+                BookSnapshot s;
+                s.symbol = sym;
+                s.bids   = book.getBids();
+                s.asks   = book.getAsks();
+                snaps.push_back(std::move(s));
+            }
+            item.snapshot_cb(std::move(snaps));
         }
     }
 }

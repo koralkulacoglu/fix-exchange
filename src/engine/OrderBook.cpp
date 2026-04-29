@@ -92,6 +92,26 @@ int OrderBook::available_to_fill(const Order& order) const {
     return total;
 }
 
+std::vector<BookLevel> OrderBook::getBids() const {
+    std::vector<BookLevel> out;
+    for (const auto& [price, orders] : bids_) {
+        int total = 0;
+        for (const auto& o : orders) total += o.leaves_qty;
+        if (total > 0) out.push_back({price, total});
+    }
+    return out;
+}
+
+std::vector<BookLevel> OrderBook::getAsks() const {
+    std::vector<BookLevel> out;
+    for (const auto& [price, orders] : asks_) {
+        int total = 0;
+        for (const auto& o : orders) total += o.leaves_qty;
+        if (total > 0) out.push_back({price, total});
+    }
+    return out;
+}
+
 Fill OrderBook::make_fill(const Order& order, double price, int qty, int leaves) const {
     return Fill{
         symbol_ + "-" + std::to_string(++const_cast<OrderBook*>(this)->exec_seq_),
