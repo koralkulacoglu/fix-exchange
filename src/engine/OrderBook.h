@@ -1,9 +1,10 @@
 #pragma once
 #include "Order.h"
-#include <deque>
 #include <functional>
+#include <list>
 #include <map>
 #include <string>
+#include <unordered_map>
 
 namespace engine {
 
@@ -28,8 +29,9 @@ private:
 
     std::string symbol_;
     FillCallback on_fill_;
-    std::map<double, std::deque<Order>, std::greater<double>> bids_;
-    std::map<double, std::deque<Order>> asks_;
+    std::map<double, std::list<Order>, std::greater<double>> bids_;
+    std::map<double, std::list<Order>> asks_;
+    std::unordered_map<std::string, std::list<Order>::iterator> order_index_;
     long long exec_seq_{0};
 };
 

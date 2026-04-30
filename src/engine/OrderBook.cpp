@@ -11,33 +11,36 @@ int OrderBook::add(Order order) {
     order.leaves_qty = order.qty;
     try_match(order);
     if (order.leaves_qty > 0 && order.type == '2' && order.tif != '3') {
-        if (order.side == '1')
-            bids_[order.price].push_back(order);
-        else
-            asks_[order.price].push_back(order);
+        if (order.side == '1') {
+            auto& lst = bids_[order.price];
+            lst.push_back(order);
+            order_index_[order.exchange_id] = std::prev(lst.end());
+        } else {
+            auto& lst = asks_[order.price];
+            lst.push_back(order);
+            order_index_[order.exchange_id] = std::prev(lst.end());
+        }
     }
     return order.leaves_qty;
 }
 
 bool OrderBook::cancel(const std::string& order_id) {
-    auto scan = [&](auto& levels) {
-        for (auto& kv : levels) {
-            auto& q = kv.second;
-            std::deque<Order> kept;
-            bool found = false;
-            while (!q.empty()) {
-                if (!found && q.front().exchange_id == order_id)
-                    found = true;
-                else
-                    kept.push_back(q.front());
-                q.pop_front();
-            }
-            q = std::move(kept);
-            if (found) return true;
-        }
-        return false;
-    };
-    return scan(bids_) || scan(asks_);
+    auto idx_it = order_index_.find(order_id);
+    if (idx_it == order_index_.end()) return false;
+    auto list_it = idx_it->second;
+    double price = list_it->price;
+    char side = list_it->side;
+    order_index_.erase(idx_it);
+    if (side == '1') {
+        auto& lst = bids_[price];
+        lst.erase(list_it);
+        if (lst.empty()) bids_.erase(price);
+    } else {
+        auto& lst = asks_[price];
+        lst.erase(list_it);
+        if (lst.empty()) asks_.erase(price);
+    }
+    return true;
 }
 
 template<typename BookSide>
@@ -62,8 +65,10 @@ void OrderBook::match_against(Order& aggressor, BookSide& opposite, bool is_buy)
         Fill maker = make_fill(resting,   best_price, fill_qty, resting.leaves_qty);
         on_fill_(maker, taker);
 
-        if (resting.leaves_qty == 0)
+        if (resting.leaves_qty == 0) {
+            order_index_.erase(resting.exchange_id);
             q.pop_front();
+        }
         if (q.empty())
             opposite.erase(it);
     }
