@@ -15,6 +15,20 @@ FixGateway::FixGateway(engine::MatchingEngine& engine,
 void FixGateway::onLogon(const FIX::SessionID& id) {
     std::cout << "Logon: " << id << "\n";
     publisher_.add_session(id);
+
+    std::string client_id = id.getSenderCompID().getValue();
+    std::vector<engine::Order> client_orders;
+    {
+        std::lock_guard<std::mutex> lock(orders_mutex_);
+        for (const auto& [exch_id, order] : active_orders_)
+            if (order.client_id == client_id)
+                client_orders.push_back(order);
+    }
+    for (const auto& order : client_orders) {
+        auto msg = make_order_status_report(order);
+        FIX::Session::sendToTarget(msg, id);
+    }
+
     engine_.requestSnapshot([id](std::vector<engine::BookSnapshot> snaps) {
         for (const auto& snap : snaps) {
             if (snap.bids.empty() && snap.asks.empty()) continue;

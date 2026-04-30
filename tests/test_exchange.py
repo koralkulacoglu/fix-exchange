@@ -94,7 +94,8 @@ class FixSession:
         self.sock.settimeout(5)
         self.seq = 1
         self.buf = b""
-        self.snapshots = []  # 35=W messages buffered during logon
+        self.snapshots = []      # 35=W messages buffered during logon
+        self.order_statuses = [] # ExecType=I reports buffered during logon
 
     def connect(self):
         self.sock.connect((HOST, PORT))
@@ -125,11 +126,12 @@ class FixSession:
 
     def logon(self):
         self.snapshots = []
+        self.order_statuses = []
         self.send("A", {"98": "0", "108": "30"})
         resp = self.recv()
         assert resp.get("35") == "A", f"Expected Logon, got: {resp}"
-        # Drain 35=W snapshots the engine sends right after logon.
-        # Guaranteed to arrive before any order ACK (same work queue).
+        # Drain 35=W snapshots and ExecType=I order status reports that arrive
+        # right after logon, so they don't interfere with subsequent recv() calls.
         old_timeout = self.sock.gettimeout()
         self.sock.settimeout(0.3)
         while True:
@@ -137,6 +139,8 @@ class FixSession:
                 msg = self.recv()
                 if msg.get("35") == "W":
                     self.snapshots.append(msg)
+                elif msg.get("35") == "8" and msg.get("150") == "I":
+                    self.order_statuses.append(msg)
             except socket.timeout:
                 break
         self.sock.settimeout(old_timeout)
@@ -632,6 +636,48 @@ def test_market_data_snapshot_on_logon():
     s2.close()
 
 
+def test_order_status_on_reconnect():
+    s = FixSession()
+    s.connect()
+    s.logon()
+
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+
+    # Place a resting limit buy on MSFT (MSFT book is empty at this point)
+    s.send("D", {
+        "11": "STATUS-BID",
+        "21": "1",
+        "55": "MSFT",
+        "54": "1",
+        "40": "2",
+        "44": "250.00",
+        "38": "75",
+        "60": now,
+    })
+    assert s.recv().get("150") == "0", "Expected New ack"
+
+    s.logout()
+    s.close()
+
+    # Reconnect — order statuses are buffered by logon() into s2.order_statuses
+    s2 = FixSession()
+    s2.connect()
+    s2.logon()
+
+    clord_ids = {m.get("11") for m in s2.order_statuses}
+    assert "STATUS-BID" in clord_ids, \
+        f"Expected order status for STATUS-BID on reconnect, got: {clord_ids}"
+
+    status = next(m for m in s2.order_statuses if m.get("11") == "STATUS-BID")
+    assert status.get("150") == "I",   f"Expected ExecType=I, got {status.get('150')}"
+    assert status.get("39")  == "0",   f"Expected OrdStatus=New(0), got {status.get('39')}"
+    assert status.get("151") == "75",  f"Expected LeavesQty=75, got {status.get('151')}"
+    assert status.get("14")  == "0",   f"Expected CumQty=0, got {status.get('14')}"
+
+    s2.logout()
+    s2.close()
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -651,6 +697,7 @@ def main():
     run("FOK order → insufficient qty → Canceled, book unchanged", test_fok_insufficient)
     run("FOK order → full qty available → Fill, no Canceled", test_fok_full_fill)
     run("35=W snapshot on re-logon shows resting orders", test_market_data_snapshot_on_logon)
+    run("ExecType=I order status replay on reconnect", test_order_status_on_reconnect)
 
     print()
     if failures:

@@ -8,11 +8,12 @@
 namespace gateway {
 
 enum class ExecType : char {
-    New      = '0',
-    PartFill = '1',
-    Fill     = '2',
-    Canceled = '4',
-    Rejected = '8',
+    New         = '0',
+    PartFill    = '1',
+    Fill        = '2',
+    Canceled    = '4',
+    Rejected    = '8',
+    OrderStatus = 'I',
 };
 
 inline FIX42::ExecutionReport make_exec_report(
@@ -83,6 +84,30 @@ inline FIX42::MarketDataIncrementalRefresh make_market_data_refresh(
     group.set(FIX::MDEntryPx(fill.price));
     group.set(FIX::MDEntrySize(fill.qty));
     msg.addGroup(group);
+    return msg;
+}
+
+inline FIX42::ExecutionReport make_order_status_report(const engine::Order& order)
+{
+    char ord_status = (order.leaves_qty < order.qty) ? '1' : '0';
+    int  cum_qty    = order.qty - order.leaves_qty;
+
+    FIX42::ExecutionReport msg(
+        FIX::OrderID(order.exchange_id),
+        FIX::ExecID(order.exchange_id + "-STATUS"),
+        FIX::ExecTransType('0'),
+        FIX::ExecType('I'),
+        FIX::OrdStatus(ord_status),
+        FIX::Symbol(order.symbol),
+        FIX::Side(order.side),
+        FIX::LeavesQty(order.leaves_qty),
+        FIX::CumQty(cum_qty),
+        FIX::AvgPx(0.0)
+    );
+    msg.set(FIX::ClOrdID(order.clord_id));
+    msg.set(FIX::OrderQty(order.qty));
+    if (order.type == '2')
+        msg.set(FIX::Price(order.price));
     return msg;
 }
 
