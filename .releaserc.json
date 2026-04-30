@@ -1,0 +1,15 @@
+{
+  "branches": ["main"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    ["@semantic-release/exec", {
+      "prepareCmd": "cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)"
+    }],
+    ["@semantic-release/github", {
+      "assets": [
+        { "path": "build/fix-exchange", "label": "fix-exchange (Linux x86_64)" }
+      ]
+    }]
+  ]
+}

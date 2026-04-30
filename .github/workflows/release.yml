@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y cmake libssl-dev build-essential
+
+      - name: Install QuickFIX
+        run: |
+          git clone --depth=1 https://github.com/quickfix/quickfix.git /tmp/quickfix
+          cmake -B /tmp/quickfix/build -S /tmp/quickfix -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/quickfix/build -j$(nproc)
+          sudo cmake --install /tmp/quickfix/build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npm install --no-save \
+            semantic-release \
+            @semantic-release/commit-analyzer \
+            @semantic-release/release-notes-generator \
+            @semantic-release/exec \
+            @semantic-release/github
+          npx semantic-release
