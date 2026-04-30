@@ -17,11 +17,13 @@ using FillCallback      = std::function<void(const Fill& maker, const Fill& take
 using CancelCallback    = std::function<void(const CancelRequest& req, bool found)>;
 using TIFCancelCallback = std::function<void(const Order& order)>;
 using SnapshotCallback  = std::function<void(std::vector<BookSnapshot>)>;
+using ReplaceCallback   = std::function<void(const ReplaceRequest& req, bool found, int new_leaves_qty)>;
 
 class MatchingEngine {
 public:
     MatchingEngine(FillCallback on_fill, CancelCallback on_cancel,
                    TIFCancelCallback on_tif_cancel = {},
+                   ReplaceCallback on_replace = {},
                    std::vector<std::string> symbols = {});
     ~MatchingEngine();
 
@@ -30,6 +32,7 @@ public:
 
     void submit(Order order);
     void cancel(CancelRequest req);
+    void replace(ReplaceRequest req);
     void requestSnapshot(SnapshotCallback cb);
 
     // Returns false if symbol is already registered or fails validation.
@@ -38,9 +41,10 @@ public:
 
 private:
     struct WorkItem {
-        enum Tag { ORDER, CANCEL, SNAPSHOT } tag;
+        enum Tag { ORDER, CANCEL, SNAPSHOT, REPLACE } tag;
         Order order;
         CancelRequest cancel_req;
+        ReplaceRequest replace_req;
         SnapshotCallback snapshot_cb;
     };
 
@@ -50,6 +54,7 @@ private:
     FillCallback      on_fill_;
     CancelCallback    on_cancel_;
     TIFCancelCallback on_tif_cancel_;
+    ReplaceCallback   on_replace_;
     std::unordered_map<std::string, OrderBook> books_;
 
     mutable std::mutex symbols_mutex_;

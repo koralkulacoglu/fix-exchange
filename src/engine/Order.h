@@ -23,6 +23,17 @@ struct CancelRequest {
     std::string symbol;
 };
 
+struct ReplaceRequest {
+    std::string orig_order_id; // exchange_id being replaced
+    std::string old_clord_id;  // previous ClOrdID (for map cleanup)
+    std::string new_clord_id;  // new ClOrdID from 35=G tag 11
+    std::string client_id;
+    std::string symbol;
+    char side;
+    double new_price;
+    int new_qty;
+};
+
 struct Fill {
     std::string exec_id;
     std::string exchange_id;   // exchange_id of the filled order

@@ -77,6 +77,9 @@ int main(int argc, char* argv[]) {
             [&](const engine::Order& o) {
                 if (gw_ptr) gw_ptr->onTIFCancel(o);
             },
+            [&](const engine::ReplaceRequest& req, bool found, int leaves) {
+                if (gw_ptr) gw_ptr->onReplace(req, found, leaves);
+            },
             symbols
         );
 

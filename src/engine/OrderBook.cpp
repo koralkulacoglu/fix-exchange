@@ -43,6 +43,37 @@ bool OrderBook::cancel(const std::string& order_id) {
     return true;
 }
 
+int OrderBook::replace(const std::string& order_id, double new_price, int new_qty) {
+    auto idx_it = order_index_.find(order_id);
+    if (idx_it == order_index_.end()) return -1;
+
+    auto list_it = idx_it->second;
+
+    if (new_price == list_it->price && new_qty < list_it->leaves_qty) {
+        list_it->qty = new_qty;
+        list_it->leaves_qty = new_qty;
+        return new_qty;
+    }
+
+    Order order = *list_it;
+    double old_price = order.price;
+    char side = order.side;
+    order_index_.erase(idx_it);
+    if (side == '1') {
+        auto& lst = bids_[old_price];
+        lst.erase(list_it);
+        if (lst.empty()) bids_.erase(old_price);
+    } else {
+        auto& lst = asks_[old_price];
+        lst.erase(list_it);
+        if (lst.empty()) asks_.erase(old_price);
+    }
+
+    order.price = new_price;
+    order.qty = new_qty;
+    return add(order);
+}
+
 template<typename BookSide>
 void OrderBook::match_against(Order& aggressor, BookSide& opposite, bool is_buy) {
     while (aggressor.leaves_qty > 0 && !opposite.empty()) {

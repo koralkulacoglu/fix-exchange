@@ -678,6 +678,154 @@ def test_order_status_on_reconnect():
     s2.close()
 
 
+def now_str():
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+
+
+def test_replace_qty_reduction():
+    s = FixSession()
+    s.connect()
+    s.logon()
+
+    # Place a resting limit buy
+    s.send("D", {
+        "11": "RPL-QTY-ORIG",
+        "21": "1",
+        "55": "AAPL",
+        "54": "1",
+        "40": "2",
+        "44": "120.00",
+        "38": "100",
+        "60": now_str(),
+    })
+    ack = s.recv()
+    assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
+
+    # Replace: same price, smaller qty (should preserve queue priority)
+    s.send("G", {
+        "11": "RPL-QTY-NEW",
+        "41": "RPL-QTY-ORIG",
+        "21": "1",
+        "55": "AAPL",
+        "54": "1",
+        "40": "2",
+        "44": "120.00",
+        "38": "60",
+        "60": now_str(),
+    })
+    resp = s.recv()
+    assert resp.get("35") == "8",   f"Expected ExecutionReport, got {resp.get('35')}"
+    assert resp.get("150") == "5",  f"Expected ExecType=Replaced(5), got {resp.get('150')}"
+    assert resp.get("11") == "RPL-QTY-NEW",  f"Expected new ClOrdID, got {resp.get('11')}"
+    assert resp.get("41") == "RPL-QTY-ORIG", f"Expected OrigClOrdID, got {resp.get('41')}"
+    assert resp.get("151") == "60", f"Expected LeavesQty=60, got {resp.get('151')}"
+
+    s.logout()
+    s.close()
+
+
+def test_replace_price_change():
+    s = FixSession()
+    s.connect()
+    s.logon()
+
+    # Place a resting limit sell
+    s.send("D", {
+        "11": "RPL-PX-ORIG",
+        "21": "1",
+        "55": "AAPL",
+        "54": "2",
+        "40": "2",
+        "44": "200.00",
+        "38": "50",
+        "60": now_str(),
+    })
+    ack = s.recv()
+    assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
+
+    # Replace: change price (loses queue priority, re-inserted at new level)
+    s.send("G", {
+        "11": "RPL-PX-NEW",
+        "41": "RPL-PX-ORIG",
+        "21": "1",
+        "55": "AAPL",
+        "54": "2",
+        "40": "2",
+        "44": "210.00",
+        "38": "50",
+        "60": now_str(),
+    })
+    resp = s.recv()
+    assert resp.get("35") == "8",  f"Expected ExecutionReport, got {resp.get('35')}"
+    assert resp.get("150") == "5", f"Expected ExecType=Replaced(5), got {resp.get('150')}"
+    assert resp.get("44") == "210", f"Expected Price=210, got {resp.get('44')}"
+
+    s.logout()
+    s.close()
+
+
+def test_replace_unknown_order():
+    s = FixSession()
+    s.connect()
+    s.logon()
+
+    # Send replace for a ClOrdID that was never submitted
+    s.send("G", {
+        "11": "RPL-UNK-NEW",
+        "41": "RPL-UNK-GHOST",
+        "21": "1",
+        "55": "AAPL",
+        "54": "1",
+        "40": "2",
+        "44": "100.00",
+        "38": "10",
+        "60": now_str(),
+    })
+    resp = s.recv()
+    assert resp.get("35") == "9", f"Expected OrderCancelReject(9), got {resp.get('35')}"
+
+    s.logout()
+    s.close()
+
+
+def test_replace_symbol_change_rejected():
+    s = FixSession()
+    s.connect()
+    s.logon()
+
+    # Place a resting order for AAPL
+    s.send("D", {
+        "11": "RPL-SYM-ORIG",
+        "21": "1",
+        "55": "AAPL",
+        "54": "1",
+        "40": "2",
+        "44": "130.00",
+        "38": "25",
+        "60": now_str(),
+    })
+    ack = s.recv()
+    assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
+
+    # Try to replace changing the symbol — should be rejected
+    s.send("G", {
+        "11": "RPL-SYM-NEW",
+        "41": "RPL-SYM-ORIG",
+        "21": "1",
+        "55": "MSFT",           # different symbol
+        "54": "1",
+        "40": "2",
+        "44": "130.00",
+        "38": "25",
+        "60": now_str(),
+    })
+    resp = s.recv()
+    assert resp.get("35") == "9", f"Expected OrderCancelReject(9), got {resp.get('35')}"
+
+    s.logout()
+    s.close()
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -698,6 +846,10 @@ def main():
     run("FOK order → full qty available → Fill, no Canceled", test_fok_full_fill)
     run("35=W snapshot on re-logon shows resting orders", test_market_data_snapshot_on_logon)
     run("ExecType=I order status replay on reconnect", test_order_status_on_reconnect)
+    run("OrderCancelReplaceRequest → same price qty reduction", test_replace_qty_reduction)
+    run("OrderCancelReplaceRequest → price change", test_replace_price_change)
+    run("OrderCancelReplaceRequest → unknown order → OrderCancelReject", test_replace_unknown_order)
+    run("OrderCancelReplaceRequest → symbol change → OrderCancelReject", test_replace_symbol_change_rejected)
 
     print()
     if failures:

@@ -16,6 +16,7 @@ public:
 
     int  add(Order order);   // returns leaves_qty after matching
     bool cancel(const std::string& order_id);
+    int  replace(const std::string& order_id, double new_price, int new_qty); // returns new leaves_qty, -1 if not found
     int  available_to_fill(const Order& order) const;
 
     std::vector<BookLevel> getBids() const;

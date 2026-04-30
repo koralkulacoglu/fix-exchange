@@ -6,9 +6,10 @@ namespace engine {
 
 MatchingEngine::MatchingEngine(FillCallback on_fill, CancelCallback on_cancel,
                                TIFCancelCallback on_tif_cancel,
+                               ReplaceCallback on_replace,
                                std::vector<std::string> symbols)
     : on_fill_(std::move(on_fill)), on_cancel_(std::move(on_cancel)),
-      on_tif_cancel_(std::move(on_tif_cancel)) {
+      on_tif_cancel_(std::move(on_tif_cancel)), on_replace_(std::move(on_replace)) {
     for (const auto& sym : symbols) {
         valid_symbols_.insert(sym);
         books_.emplace(sym, OrderBook(sym, on_fill_));
@@ -73,6 +74,17 @@ void MatchingEngine::requestSnapshot(SnapshotCallback cb) {
     cv_.notify_one();
 }
 
+void MatchingEngine::replace(ReplaceRequest req) {
+    WorkItem item;
+    item.tag         = WorkItem::REPLACE;
+    item.replace_req = std::move(req);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.push(std::move(item));
+    }
+    cv_.notify_one();
+}
+
 void MatchingEngine::cancel(CancelRequest req) {
     WorkItem item;
     item.tag        = WorkItem::CANCEL;
@@ -114,6 +126,10 @@ void MatchingEngine::run() {
         } else if (item.tag == WorkItem::CANCEL) {
             bool found = book_for(item.cancel_req.symbol).cancel(item.cancel_req.orig_order_id);
             on_cancel_(item.cancel_req, found);
+        } else if (item.tag == WorkItem::REPLACE) {
+            const auto& req = item.replace_req;
+            int result = book_for(req.symbol).replace(req.orig_order_id, req.new_price, req.new_qty);
+            if (on_replace_) on_replace_(req, result >= 0, result);
         } else {
             std::vector<BookSnapshot> snaps;
             snaps.reserve(books_.size());

@@ -7,6 +7,7 @@
 #include <quickfix/SessionID.h>
 #include <quickfix/fix42/ExecutionReport.h>
 #include <quickfix/fix42/NewOrderSingle.h>
+#include <quickfix/fix42/OrderCancelReplaceRequest.h>
 #include <quickfix/fix42/OrderCancelRequest.h>
 #include <atomic>
 #include <mutex>
@@ -23,6 +24,7 @@ public:
 
     void onFill(const engine::Fill& maker, const engine::Fill& taker);
     void onCancel(const engine::CancelRequest& req, bool found);
+    void onReplace(const engine::ReplaceRequest& req, bool found, int new_leaves_qty);
     void onTIFCancel(const engine::Order& order);
 
     // FIX::Application interface
@@ -42,6 +44,7 @@ public:
 private:
     void onMessage(const FIX42::NewOrderSingle& msg, const FIX::SessionID& id);
     void onMessage(const FIX42::OrderCancelRequest& msg, const FIX::SessionID& id);
+    void onMessage(const FIX42::OrderCancelReplaceRequest& msg, const FIX::SessionID& id);
 
     engine::MatchingEngine& engine_;
     market_data::MarketDataPublisher& publisher_;

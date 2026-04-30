@@ -2,6 +2,7 @@
 #include "MessageFactory.h"
 #include "market_data/MarketDataPublisher.h"
 #include <quickfix/fix42/NewOrderSingle.h>
+#include <quickfix/fix42/OrderCancelReplaceRequest.h>
 #include <quickfix/fix42/OrderCancelRequest.h>
 #include <quickfix/Fields.h>
 #include <iostream>
@@ -116,6 +117,84 @@ void FixGateway::onMessage(const FIX42::OrderCancelRequest& msg, const FIX::Sess
     }
 
     engine_.cancel(std::move(req));
+}
+
+void FixGateway::onMessage(const FIX42::OrderCancelReplaceRequest& msg, const FIX::SessionID& session_id) {
+    FIX::ClOrdID     clOrdID;     msg.get(clOrdID);
+    FIX::OrigClOrdID origClOrdID; msg.get(origClOrdID);
+    FIX::Symbol      symbol;      msg.get(symbol);
+    FIX::Side        side;        msg.get(side);
+    FIX::OrdType     ordType;     msg.get(ordType);
+    FIX::OrderQty    orderQty;    msg.get(orderQty);
+    FIX::Price       price;       msg.get(price);
+
+    engine::ReplaceRequest req;
+    req.new_clord_id = clOrdID.getValue();
+    req.old_clord_id = origClOrdID.getValue();
+    req.client_id    = session_id.getSenderCompID().getValue();
+    req.symbol       = symbol.getValue();
+    req.side         = side.getValue();
+    req.new_price    = price.getValue();
+    req.new_qty      = static_cast<int>(orderQty.getValue());
+
+    {
+        std::lock_guard<std::mutex> lock(orders_mutex_);
+        auto cit = clord_to_exchange_.find(req.old_clord_id);
+        if (cit == clord_to_exchange_.end()) {
+            auto reject = make_cancel_reject(req.new_clord_id, req.old_clord_id, "UNKNOWN", "Unknown order");
+            FIX::Session::sendToTarget(reject, session_id);
+            return;
+        }
+        req.orig_order_id = cit->second;
+
+        auto oit = active_orders_.find(req.orig_order_id);
+        if (oit != active_orders_.end()) {
+            const auto& existing = oit->second;
+            if (existing.symbol != req.symbol || existing.side != req.side) {
+                auto reject = make_cancel_reject(req.new_clord_id, req.old_clord_id,
+                                                 req.orig_order_id, "Cannot change symbol or side");
+                FIX::Session::sendToTarget(reject, session_id);
+                return;
+            }
+        }
+    }
+
+    engine_.replace(std::move(req));
+}
+
+void FixGateway::onReplace(const engine::ReplaceRequest& req, bool found, int new_leaves_qty) {
+    FIX::SessionID session_id;
+    engine::Order order;
+    {
+        std::lock_guard<std::mutex> lock(orders_mutex_);
+        auto sit = order_sessions_.find(req.orig_order_id);
+        auto oit = active_orders_.find(req.orig_order_id);
+        if (sit == order_sessions_.end() || oit == active_orders_.end()) return;
+        session_id = sit->second;
+
+        if (!found) {
+            auto reject = make_cancel_reject(req.new_clord_id, req.old_clord_id,
+                                             req.orig_order_id, "Order not found in book");
+            FIX::Session::sendToTarget(reject, session_id);
+            return;
+        }
+
+        clord_to_exchange_.erase(req.old_clord_id);
+        clord_to_exchange_.emplace(req.new_clord_id, req.orig_order_id);
+        oit->second.clord_id   = req.new_clord_id;
+        oit->second.price      = req.new_price;
+        oit->second.qty        = req.new_qty;
+        oit->second.leaves_qty = std::max(0, new_leaves_qty);
+        order = oit->second;
+
+        if (new_leaves_qty == 0) {
+            order_sessions_.erase(sit);
+            active_orders_.erase(oit);
+        }
+    }
+    auto report = make_exec_report(order, ExecType::Replaced);
+    report.set(FIX::OrigClOrdID(req.old_clord_id));
+    FIX::Session::sendToTarget(report, session_id);
 }
 
 void FixGateway::onCancel(const engine::CancelRequest& req, bool found) {

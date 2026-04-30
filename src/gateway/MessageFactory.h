@@ -3,6 +3,7 @@
 #include <quickfix/fix42/ExecutionReport.h>
 #include <quickfix/fix42/MarketDataIncrementalRefresh.h>
 #include <quickfix/fix42/MarketDataSnapshotFullRefresh.h>
+#include <quickfix/fix42/OrderCancelReject.h>
 #include <string>
 
 namespace gateway {
@@ -12,6 +13,7 @@ enum class ExecType : char {
     PartFill    = '1',
     Fill        = '2',
     Canceled    = '4',
+    Replaced    = '5',
     Rejected    = '8',
     OrderStatus = 'I',
 };
@@ -130,6 +132,23 @@ inline FIX42::MarketDataSnapshotFullRefresh make_market_data_snapshot(
         g.set(FIX::MDEntrySize(level.qty));
         msg.addGroup(g);
     }
+    return msg;
+}
+
+inline FIX42::OrderCancelReject make_cancel_reject(
+    const std::string& clord_id,
+    const std::string& orig_clord_id,
+    const std::string& exchange_id,
+    const std::string& reason)
+{
+    FIX42::OrderCancelReject msg(
+        FIX::OrderID(exchange_id),
+        FIX::ClOrdID(clord_id),
+        FIX::OrigClOrdID(orig_clord_id),
+        FIX::OrdStatus('8'),
+        FIX::CxlRejResponseTo('2')
+    );
+    msg.set(FIX::Text(reason));
     return msg;
 }
 
