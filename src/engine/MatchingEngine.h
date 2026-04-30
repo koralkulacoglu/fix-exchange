@@ -18,12 +18,14 @@ using CancelCallback    = std::function<void(const CancelRequest& req, bool foun
 using TIFCancelCallback = std::function<void(const Order& order)>;
 using SnapshotCallback  = std::function<void(std::vector<BookSnapshot>)>;
 using ReplaceCallback   = std::function<void(const ReplaceRequest& req, bool found, int new_leaves_qty)>;
+using RestingCallback   = std::function<void(const Order& order, int leaves_qty)>;
 
 class MatchingEngine {
 public:
     MatchingEngine(FillCallback on_fill, CancelCallback on_cancel,
                    TIFCancelCallback on_tif_cancel = {},
                    ReplaceCallback on_replace = {},
+                   RestingCallback on_order_rested = {},
                    std::vector<std::string> symbols = {});
     ~MatchingEngine();
 
@@ -55,6 +57,7 @@ private:
     CancelCallback    on_cancel_;
     TIFCancelCallback on_tif_cancel_;
     ReplaceCallback   on_replace_;
+    RestingCallback   on_order_rested_;
     std::unordered_map<std::string, OrderBook> books_;
 
     mutable std::mutex symbols_mutex_;

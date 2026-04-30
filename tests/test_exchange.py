@@ -207,10 +207,55 @@ def test_new_order_ack():
     s.close()
 
 
+def recv_exec(session):
+    """Receive the next ExecutionReport, discarding market data and snapshots."""
+    while True:
+        msg = session.recv()
+        if msg.get("35") == "8":
+            return msg
+
+
+def subscribe_md(session, req_id, symbols):
+    """Send a 35=V MarketDataRequest to subscribe to a list of symbols."""
+    body = {
+        "262": req_id,
+        "263": "1",     # Subscribe
+        "264": "0",     # Full depth
+        "265": "1",     # Incremental refresh
+        "267": "1",
+        "269": "0",     # Bid entry type
+        "146": str(len(symbols)),
+    }
+    for sym in symbols:
+        body["55"] = sym
+    session.send("V", body)
+
+
+def drain(session, timeout=0.4):
+    """Collect all messages until timeout, return (exec_reports, md_messages)."""
+    exec_reports, md = [], []
+    old = session.sock.gettimeout()
+    session.sock.settimeout(timeout)
+    while True:
+        try:
+            msg = session.recv()
+            if msg.get("35") == "8":
+                exec_reports.append(msg)
+            elif msg.get("35") == "X":
+                md.append(msg)
+        except socket.timeout:
+            break
+    session.sock.settimeout(old)
+    return exec_reports, md
+
+
 def test_order_match_fills():
     s = FixSession()
     s.connect()
     s.logon()
+
+    # Subscribe to MSFT market data before placing orders
+    subscribe_md(s, "MD-MATCH", ["MSFT"])
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
 
@@ -225,7 +270,7 @@ def test_order_match_fills():
         "38": "100",
         "60": now,
     })
-    ack_buy = s.recv()
+    ack_buy = recv_exec(s)
     assert ack_buy.get("150") == "0", "Buy ack should be ExecType=New"
 
     # Sell 100 MSFT @ 300 (crosses the resting buy)
@@ -239,28 +284,17 @@ def test_order_match_fills():
         "38": "100",
         "60": now,
     })
-    ack_sell = s.recv()
+    ack_sell = recv_exec(s)
     assert ack_sell.get("150") == "0", "Sell ack should be ExecType=New"
 
-    # Collect next two reports — should be fills for maker and taker
-    # Plus a MarketDataIncrementalRefresh (35=X)
-    reports = []
-    market_data = []
-    for _ in range(3):
-        try:
-            msg = s.recv()
-            if msg.get("35") == "8":
-                reports.append(msg)
-            elif msg.get("35") == "X":
-                market_data.append(msg)
-        except socket.timeout:
-            break
+    # Drain: expect 2 fill ExecReports and at least 1 35=X (resting Bid New + fill Delete+Trade)
+    reports, market_data = drain(s)
 
     assert len(reports) == 2, f"Expected 2 fill ExecReports, got {len(reports)}"
     for r in reports:
         assert r.get("150") in ("1", "2"), f"Expected PartFill or Fill ExecType, got {r.get('150')}"
 
-    assert len(market_data) == 1, f"Expected 1 MarketDataIncrementalRefresh, got {len(market_data)}"
+    assert len(market_data) >= 1, f"Expected at least 1 MarketDataIncrementalRefresh, got {len(market_data)}"
 
     s.logout()
     s.close()
@@ -678,6 +712,123 @@ def test_order_status_on_reconnect():
     s2.close()
 
 
+def test_md_new_resting_order():
+    s = FixSession()
+    s.connect()
+    s.logon()
+
+    subscribe_md(s, "MD-NEW", ["AAPL"])
+
+    s.send("D", {
+        "11": "MD-BID-1",
+        "21": "1",
+        "55": "AAPL",
+        "54": "1",       # buy
+        "40": "2",
+        "44": "99.00",
+        "38": "10",
+        "60": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S"),
+    })
+    ack = recv_exec(s)
+    assert ack.get("150") == "0", "Expected New ack"
+
+    _, md = drain(s)
+    assert len(md) >= 1, f"Expected at least 1 35=X for resting order, got {len(md)}"
+    # The resting bid entry should be MDUpdateAction=New(0), MDEntryType=Bid(0)
+    assert any(m.get("279") == "0" and m.get("269") == "0" for m in md), \
+        f"Expected 35=X with Action=New, Type=Bid; got: {md}"
+
+    s.logout()
+    s.close()
+
+
+def test_md_cancel():
+    s = FixSession()
+    s.connect()
+    s.logon()
+
+    subscribe_md(s, "MD-CXL", ["AAPL"])
+
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+    s.send("D", {
+        "11": "MD-CXL-ORD",
+        "21": "1",
+        "55": "AAPL",
+        "54": "1",
+        "40": "2",
+        "44": "88.00",
+        "38": "5",
+        "60": now,
+    })
+    ack = recv_exec(s)
+    assert ack.get("150") == "0", "Expected New ack"
+
+    # Drain the resting 35=X
+    drain(s, timeout=0.2)
+
+    s.send("F", {
+        "41": "MD-CXL-ORD",
+        "11": "MD-CXL-ORD-CXL",
+        "55": "AAPL",
+        "54": "1",
+        "38": "5",
+        "60": now,
+    })
+    confirm = recv_exec(s)
+    assert confirm.get("150") == "4", "Expected Canceled"
+
+    _, md = drain(s)
+    assert len(md) >= 1, f"Expected at least 1 35=X for cancel, got {len(md)}"
+    assert any(m.get("279") == "2" for m in md), \
+        f"Expected 35=X with Action=Delete(2); got: {md}"
+
+    s.logout()
+    s.close()
+
+
+def test_md_snapshot_on_subscribe():
+    s = FixSession()
+    s.connect()
+    s.logon()
+
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+
+    # Place a resting order on AMZN
+    s.send("D", {
+        "11": "MD-SNAP-BID",
+        "21": "1",
+        "55": "AMZN",
+        "54": "1",
+        "40": "2",
+        "44": "185.00",
+        "38": "20",
+        "60": now,
+    })
+    assert s.recv().get("150") == "0", "Expected New ack"
+
+    # Now subscribe — should immediately receive a 35=W snapshot
+    subscribe_md(s, "MD-SNAP", ["AMZN"])
+
+    old_timeout = s.sock.gettimeout()
+    s.sock.settimeout(1.0)
+    snapshots = []
+    try:
+        while True:
+            msg = s.recv()
+            if msg.get("35") == "W" and msg.get("55") == "AMZN":
+                snapshots.append(msg)
+    except socket.timeout:
+        pass
+    s.sock.settimeout(old_timeout)
+
+    assert len(snapshots) >= 1, "Expected 35=W snapshot for AMZN after subscribing"
+    n_entries = int(snapshots[0].get("268", "0"))
+    assert n_entries >= 1, f"Expected at least 1 MD entry in AMZN snapshot, got {n_entries}"
+
+    s.logout()
+    s.close()
+
+
 def now_str():
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
 
@@ -846,6 +997,9 @@ def main():
     run("FOK order → full qty available → Fill, no Canceled", test_fok_full_fill)
     run("35=W snapshot on re-logon shows resting orders", test_market_data_snapshot_on_logon)
     run("ExecType=I order status replay on reconnect", test_order_status_on_reconnect)
+    run("35=V subscribe → 35=X on new resting order", test_md_new_resting_order)
+    run("35=V subscribe → 35=X Delete on cancel", test_md_cancel)
+    run("35=V subscribe → 35=W snapshot on subscribe", test_md_snapshot_on_subscribe)
     run("OrderCancelReplaceRequest → same price qty reduction", test_replace_qty_reduction)
     run("OrderCancelReplaceRequest → price change", test_replace_price_change)
     run("OrderCancelReplaceRequest → unknown order → OrderCancelReject", test_replace_unknown_order)

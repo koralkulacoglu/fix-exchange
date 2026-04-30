@@ -75,17 +75,23 @@ inline FIX42::ExecutionReport make_tif_cancel_report(const engine::Order& order)
     return msg;
 }
 
-inline FIX42::MarketDataIncrementalRefresh make_market_data_refresh(
-    const engine::Fill& fill)
+inline FIX42::MarketDataIncrementalRefresh make_md_increment(
+    char action,
+    char entry_type,
+    const std::string& symbol,
+    double price,
+    int qty,
+    const std::string& entry_id = {})
 {
     FIX42::MarketDataIncrementalRefresh msg;
-    FIX42::MarketDataIncrementalRefresh::NoMDEntries group;
-    group.set(FIX::MDUpdateAction('0'));
-    group.set(FIX::MDEntryType('2'));
-    group.set(FIX::Symbol(fill.symbol));
-    group.set(FIX::MDEntryPx(fill.price));
-    group.set(FIX::MDEntrySize(fill.qty));
-    msg.addGroup(group);
+    FIX42::MarketDataIncrementalRefresh::NoMDEntries g;
+    g.set(FIX::MDUpdateAction(action));
+    g.set(FIX::MDEntryType(entry_type));
+    g.set(FIX::Symbol(symbol));
+    g.set(FIX::MDEntryPx(price));
+    g.set(FIX::MDEntrySize(qty));
+    if (!entry_id.empty()) g.set(FIX::MDEntryID(entry_id));
+    msg.addGroup(g);
     return msg;
 }
 

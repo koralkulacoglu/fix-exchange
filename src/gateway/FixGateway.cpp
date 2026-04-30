@@ -1,6 +1,7 @@
 #include "FixGateway.h"
 #include "MessageFactory.h"
 #include "market_data/MarketDataPublisher.h"
+#include <quickfix/fix42/MarketDataRequest.h>
 #include <quickfix/fix42/NewOrderSingle.h>
 #include <quickfix/fix42/OrderCancelReplaceRequest.h>
 #include <quickfix/fix42/OrderCancelRequest.h>
@@ -165,6 +166,7 @@ void FixGateway::onMessage(const FIX42::OrderCancelReplaceRequest& msg, const FI
 void FixGateway::onReplace(const engine::ReplaceRequest& req, bool found, int new_leaves_qty) {
     FIX::SessionID session_id;
     engine::Order order;
+    double order_old_price = 0.0;
     {
         std::lock_guard<std::mutex> lock(orders_mutex_);
         auto sit = order_sessions_.find(req.orig_order_id);
@@ -179,6 +181,7 @@ void FixGateway::onReplace(const engine::ReplaceRequest& req, bool found, int ne
             return;
         }
 
+        double old_price = oit->second.price;
         clord_to_exchange_.erase(req.old_clord_id);
         clord_to_exchange_.emplace(req.new_clord_id, req.orig_order_id);
         oit->second.clord_id   = req.new_clord_id;
@@ -191,10 +194,12 @@ void FixGateway::onReplace(const engine::ReplaceRequest& req, bool found, int ne
             order_sessions_.erase(sit);
             active_orders_.erase(oit);
         }
+        order_old_price = old_price;
     }
     auto report = make_exec_report(order, ExecType::Replaced);
     report.set(FIX::OrigClOrdID(req.old_clord_id));
     FIX::Session::sendToTarget(report, session_id);
+    publisher_.on_replace(req, new_leaves_qty, order_old_price);
 }
 
 void FixGateway::onCancel(const engine::CancelRequest& req, bool found) {
@@ -216,6 +221,7 @@ void FixGateway::onCancel(const engine::CancelRequest& req, bool found) {
     if (found) {
         auto report = make_exec_report(order, ExecType::Canceled);
         FIX::Session::sendToTarget(report, session_id);
+        publisher_.on_cancel(order);
     }
 }
 
@@ -259,6 +265,39 @@ void FixGateway::onTIFCancel(const engine::Order& order) {
     }
     auto report = make_tif_cancel_report(order);
     FIX::Session::sendToTarget(report, session_id);
+}
+
+void FixGateway::onOrderRested(const engine::Order& order, int leaves_qty) {
+    publisher_.on_new_order(order, leaves_qty);
+}
+
+void FixGateway::onMessage(const FIX42::MarketDataRequest& msg, const FIX::SessionID& session_id) {
+    FIX::SubscriptionRequestType subType; msg.get(subType);
+    bool subscribe = (subType.getValue() == '1');
+
+    FIX::NoRelatedSym noSym; msg.get(noSym);
+    std::vector<std::string> symbols;
+    for (int i = 1; i <= noSym.getValue(); ++i) {
+        FIX42::MarketDataRequest::NoRelatedSym grp;
+        msg.getGroup(i, grp);
+        FIX::Symbol sym; grp.get(sym);
+        symbols.push_back(sym.getValue());
+    }
+
+    if (subscribe) {
+        publisher_.subscribe(session_id, symbols);
+        // Send immediate 35=W snapshot for each subscribed symbol
+        engine_.requestSnapshot([session_id, symbols](std::vector<engine::BookSnapshot> snaps) {
+            for (const auto& snap : snaps) {
+                if (std::find(symbols.begin(), symbols.end(), snap.symbol) == symbols.end()) continue;
+                if (snap.bids.empty() && snap.asks.empty()) continue;
+                auto msg = gateway::make_market_data_snapshot(snap);
+                FIX::Session::sendToTarget(msg, session_id);
+            }
+        });
+    } else {
+        publisher_.unsubscribe(session_id, symbols);
+    }
 }
 
 } // namespace gateway

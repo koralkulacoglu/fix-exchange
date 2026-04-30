@@ -7,9 +7,11 @@ namespace engine {
 MatchingEngine::MatchingEngine(FillCallback on_fill, CancelCallback on_cancel,
                                TIFCancelCallback on_tif_cancel,
                                ReplaceCallback on_replace,
+                               RestingCallback on_order_rested,
                                std::vector<std::string> symbols)
     : on_fill_(std::move(on_fill)), on_cancel_(std::move(on_cancel)),
-      on_tif_cancel_(std::move(on_tif_cancel)), on_replace_(std::move(on_replace)) {
+      on_tif_cancel_(std::move(on_tif_cancel)), on_replace_(std::move(on_replace)),
+      on_order_rested_(std::move(on_order_rested)) {
     for (const auto& sym : symbols) {
         valid_symbols_.insert(sym);
         books_.emplace(sym, OrderBook(sym, on_fill_));
@@ -121,6 +123,8 @@ void MatchingEngine::run() {
                 if (order.tif == '3' && leaves > 0) {
                     order.leaves_qty = leaves;
                     if (on_tif_cancel_) on_tif_cancel_(order);
+                } else if (leaves > 0 && order.type == '2') {
+                    if (on_order_rested_) on_order_rested_(order, leaves);
                 }
             }
         } else if (item.tag == WorkItem::CANCEL) {

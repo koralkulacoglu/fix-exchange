@@ -80,6 +80,9 @@ int main(int argc, char* argv[]) {
             [&](const engine::ReplaceRequest& req, bool found, int leaves) {
                 if (gw_ptr) gw_ptr->onReplace(req, found, leaves);
             },
+            [&](const engine::Order& o, int leaves) {
+                if (gw_ptr) gw_ptr->onOrderRested(o, leaves);
+            },
             symbols
         );
 
