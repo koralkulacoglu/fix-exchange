@@ -71,6 +71,7 @@ log/
 # Python
 *.pyc
 __pycache__/
+.venv/
 
 # Claude Code
 .claude/

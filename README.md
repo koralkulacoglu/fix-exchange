@@ -28,6 +28,21 @@ flowchart LR
 
 ---
 
+## Performance
+
+See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, scenario descriptions, and how to run.
+
+![Latency CDF](docs/bench_results/latency_cdf.png)
+
+Generate results and charts locally:
+
+```bash
+pip install rich matplotlib
+python3 tests/bench.py --count 1000
+```
+
+---
+
 ## Dependencies
 
 | Dependency | Version | Install |
