@@ -4,7 +4,7 @@
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
     ["@semantic-release/exec", {
-      "prepareCmd": "cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)"
+      "prepareCmd": "bash scripts/build.sh"
     }],
     ["@semantic-release/github", {
       "assets": [

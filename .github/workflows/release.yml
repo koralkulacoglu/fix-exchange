@@ -17,16 +17,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install build dependencies
-        run: sudo apt-get install -y cmake libssl-dev build-essential
-
-      - name: Install QuickFIX
-        run: |
-          git clone --depth=1 https://github.com/quickfix/quickfix.git /tmp/quickfix
-          cmake -B /tmp/quickfix/build -S /tmp/quickfix -DCMAKE_BUILD_TYPE=Release
-          cmake --build /tmp/quickfix/build -j$(nproc)
-          sudo cmake --install /tmp/quickfix/build
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
