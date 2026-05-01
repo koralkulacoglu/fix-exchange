@@ -15,8 +15,10 @@ Then run:
 import atexit
 import datetime
 import socket
+import struct
 import subprocess
 import sys
+import threading
 import time
 
 HOST = "127.0.0.1"
@@ -94,7 +96,6 @@ class FixSession:
         self.sock.settimeout(5)
         self.seq = 1
         self.buf = b""
-        self.snapshots = []      # 35=W messages buffered during logon
         self.order_statuses = [] # ExecType=I reports buffered during logon
 
     def connect(self):
@@ -125,21 +126,17 @@ class FixSession:
             self.buf += chunk
 
     def logon(self):
-        self.snapshots = []
         self.order_statuses = []
         self.send("A", {"98": "0", "108": "30"})
         resp = self.recv()
         assert resp.get("35") == "A", f"Expected Logon, got: {resp}"
-        # Drain 35=W snapshots and ExecType=I order status reports that arrive
-        # right after logon, so they don't interfere with subsequent recv() calls.
+        # Drain ExecType=I order status reports that arrive right after logon.
         old_timeout = self.sock.gettimeout()
         self.sock.settimeout(0.3)
         while True:
             try:
                 msg = self.recv()
-                if msg.get("35") == "W":
-                    self.snapshots.append(msg)
-                elif msg.get("35") == "8" and msg.get("150") == "I":
+                if msg.get("35") == "8" and msg.get("150") == "I":
                     self.order_statuses.append(msg)
             except socket.timeout:
                 break
@@ -153,6 +150,81 @@ class FixSession:
             self.recv()
         except socket.timeout:
             pass
+
+
+# ---------------------------------------------------------------------------
+# UDP multicast market data listener
+# ---------------------------------------------------------------------------
+
+MD_MCAST_GROUP = "239.1.1.1"
+MD_MCAST_PORT  = 5003
+MD_FMT  = "<Q B B 8s d i 16s"
+MD_SIZE = struct.calcsize(MD_FMT)
+
+EVENT_NEW_ORDER        = 0
+EVENT_CANCEL           = 1
+EVENT_FILL_RESTING     = 2
+EVENT_TRADE            = 3
+EVENT_REPLACE_INPLACE  = 4
+EVENT_REPLACE_DELETE   = 5
+EVENT_REPLACE_NEW      = 6
+
+SIDE_BID   = ord('0')
+SIDE_ASK   = ord('1')
+SIDE_TRADE = ord('2')
+
+
+class UdpMdListener:
+    """Joins the multicast group and collects UDP market-data packets in a background thread."""
+    def __init__(self, group=MD_MCAST_GROUP, port=MD_MCAST_PORT):
+        self.group   = group
+        self.port    = port
+        self.packets = []
+        self._sock   = None
+        self._thread = None
+        self._stop   = threading.Event()
+
+    def start(self):
+        self._stop.clear()
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("", self.port))
+        mreq = struct.pack("4sL", socket.inet_aton(self.group), socket.INADDR_ANY)
+        self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        self._sock.settimeout(0.1)
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                data = self._sock.recv(256)
+                if len(data) == MD_SIZE:
+                    seq, event_type, side, symbol_b, price, qty, exch_b = struct.unpack(MD_FMT, data)
+                    self.packets.append({
+                        "seq":         seq,
+                        "event_type":  event_type,
+                        "side":        side,
+                        "symbol":      symbol_b.rstrip(b"\x00").decode("ascii"),
+                        "price":       price,
+                        "qty":         qty,
+                        "exchange_id": exch_b.rstrip(b"\x00").decode("ascii"),
+                    })
+            except socket.timeout:
+                pass
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=1.0)
+        if self._sock:
+            self._sock.close()
+
+    def wait_for(self, count, timeout=2.0):
+        deadline = time.time() + timeout
+        while len(self.packets) < count and time.time() < deadline:
+            time.sleep(0.05)
+        return self.packets
 
 
 # ---------------------------------------------------------------------------
@@ -215,25 +287,9 @@ def recv_exec(session):
             return msg
 
 
-def subscribe_md(session, req_id, symbols):
-    """Send a 35=V MarketDataRequest to subscribe to a list of symbols."""
-    body = {
-        "262": req_id,
-        "263": "1",     # Subscribe
-        "264": "0",     # Full depth
-        "265": "1",     # Incremental refresh
-        "267": "1",
-        "269": "0",     # Bid entry type
-        "146": str(len(symbols)),
-    }
-    for sym in symbols:
-        body["55"] = sym
-    session.send("V", body)
-
-
 def drain(session, timeout=0.4):
-    """Collect all messages until timeout, return (exec_reports, md_messages)."""
-    exec_reports, md = [], []
+    """Collect all ExecutionReports until timeout."""
+    exec_reports = []
     old = session.sock.gettimeout()
     session.sock.settimeout(timeout)
     while True:
@@ -241,21 +297,16 @@ def drain(session, timeout=0.4):
             msg = session.recv()
             if msg.get("35") == "8":
                 exec_reports.append(msg)
-            elif msg.get("35") == "X":
-                md.append(msg)
         except socket.timeout:
             break
     session.sock.settimeout(old)
-    return exec_reports, md
+    return exec_reports
 
 
 def test_order_match_fills():
     s = FixSession()
     s.connect()
     s.logon()
-
-    # Subscribe to MSFT market data before placing orders
-    subscribe_md(s, "MD-MATCH", ["MSFT"])
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
 
@@ -287,14 +338,10 @@ def test_order_match_fills():
     ack_sell = recv_exec(s)
     assert ack_sell.get("150") == "0", "Sell ack should be ExecType=New"
 
-    # Drain: expect 2 fill ExecReports and at least 1 35=X (resting Bid New + fill Delete+Trade)
-    reports, market_data = drain(s)
-
+    reports = drain(s)
     assert len(reports) == 2, f"Expected 2 fill ExecReports, got {len(reports)}"
     for r in reports:
         assert r.get("150") in ("1", "2"), f"Expected PartFill or Fill ExecType, got {r.get('150')}"
-
-    assert len(market_data) >= 1, f"Expected at least 1 MarketDataIncrementalRefresh, got {len(market_data)}"
 
     s.logout()
     s.close()
@@ -627,48 +674,6 @@ def test_fok_full_fill():
     s.close()
 
 
-def test_market_data_snapshot_on_logon():
-    s = FixSession()
-    s.connect()
-    s.logon()
-
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
-
-    # Place two resting bids and one resting ask for GOOG (prices don't cross)
-    for clord, side, price, qty in [
-        ("SNAP-BID1", "1", "150.00", "100"),
-        ("SNAP-BID2", "1", "148.00", "50"),
-        ("SNAP-ASK1", "2", "155.00", "200"),
-    ]:
-        s.send("D", {
-            "11": clord, "21": "1", "55": "GOOG",
-            "54": side, "40": "2", "44": price, "38": qty, "60": now,
-        })
-        ack = s.recv()
-        assert ack.get("150") == "0", f"Expected New ack for {clord}"
-
-    s.logout()
-    s.close()
-
-    # Reconnect — logon() buffers any 35=W snapshots in s2.snapshots
-    s2 = FixSession()
-    s2.connect()
-    s2.logon()
-    snapshots = {m.get("55"): m for m in s2.snapshots}
-
-    assert "GOOG" in snapshots, \
-        f"Expected 35=W snapshot for GOOG on re-logon, received for: {list(snapshots.keys())}"
-    n_entries = int(snapshots["GOOG"].get("268", "0"))
-    assert n_entries == 3, \
-        f"Expected 3 MD entries (2 bids + 1 ask) in GOOG snapshot, got {n_entries}"
-
-    # MSFT and AMZN had all orders filled/cancelled — no snapshot expected
-    assert "MSFT" not in snapshots, "MSFT book is empty; no 35=W expected"
-    assert "AMZN" not in snapshots, "AMZN book is empty; no 35=W expected"
-
-    s2.logout()
-    s2.close()
-
 
 def test_order_status_on_reconnect():
     s = FixSession()
@@ -712,46 +717,57 @@ def test_order_status_on_reconnect():
     s2.close()
 
 
-def test_md_new_resting_order():
+
+def now_str():
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+
+
+def test_udp_md_new_resting_order():
+    listener = UdpMdListener()
+    listener.start()
+
     s = FixSession()
     s.connect()
     s.logon()
 
-    subscribe_md(s, "MD-NEW", ["AAPL"])
-
     s.send("D", {
-        "11": "MD-BID-1",
+        "11": "UDP-BID-1",
         "21": "1",
         "55": "AAPL",
-        "54": "1",       # buy
+        "54": "1",
         "40": "2",
         "44": "99.00",
         "38": "10",
-        "60": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S"),
+        "60": now_str(),
     })
     ack = recv_exec(s)
     assert ack.get("150") == "0", "Expected New ack"
 
-    _, md = drain(s)
-    assert len(md) >= 1, f"Expected at least 1 35=X for resting order, got {len(md)}"
-    # The resting bid entry should be MDUpdateAction=New(0), MDEntryType=Bid(0)
-    assert any(m.get("279") == "0" and m.get("269") == "0" for m in md), \
-        f"Expected 35=X with Action=New, Type=Bid; got: {md}"
-
+    listener.wait_for(1, timeout=2.0)
+    listener.stop()
     s.logout()
     s.close()
 
+    pkts = [p for p in listener.packets
+            if p["event_type"] == EVENT_NEW_ORDER and p["symbol"] == "AAPL"]
+    assert len(pkts) >= 1, f"Expected >= 1 NewOrder UDP packet for AAPL, got {listener.packets}"
+    pkt = pkts[0]
+    assert pkt["side"] == SIDE_BID, f"Expected SIDE_BID, got {pkt['side']}"
+    assert abs(pkt["price"] - 99.0) < 1e-9, f"Expected price 99.0, got {pkt['price']}"
+    assert pkt["qty"] == 10, f"Expected qty 10, got {pkt['qty']}"
 
-def test_md_cancel():
+
+def test_udp_md_cancel():
+    listener = UdpMdListener()
+    listener.start()
+
     s = FixSession()
     s.connect()
     s.logon()
+    now = now_str()
 
-    subscribe_md(s, "MD-CXL", ["AAPL"])
-
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
     s.send("D", {
-        "11": "MD-CXL-ORD",
+        "11": "UDP-CXL-ORD",
         "21": "1",
         "55": "AAPL",
         "54": "1",
@@ -760,77 +776,78 @@ def test_md_cancel():
         "38": "5",
         "60": now,
     })
-    ack = recv_exec(s)
-    assert ack.get("150") == "0", "Expected New ack"
+    recv_exec(s)
 
-    # Drain the resting 35=X
-    drain(s, timeout=0.2)
+    time.sleep(0.2)
 
     s.send("F", {
-        "41": "MD-CXL-ORD",
-        "11": "MD-CXL-ORD-CXL",
+        "41": "UDP-CXL-ORD",
+        "11": "UDP-CXL-ORD-CXL",
         "55": "AAPL",
         "54": "1",
         "38": "5",
         "60": now,
     })
-    confirm = recv_exec(s)
-    assert confirm.get("150") == "4", "Expected Canceled"
+    recv_exec(s)
 
-    _, md = drain(s)
-    assert len(md) >= 1, f"Expected at least 1 35=X for cancel, got {len(md)}"
-    assert any(m.get("279") == "2" for m in md), \
-        f"Expected 35=X with Action=Delete(2); got: {md}"
-
+    listener.wait_for(2, timeout=2.0)
+    listener.stop()
     s.logout()
     s.close()
 
+    pkts = [p for p in listener.packets
+            if p["event_type"] == EVENT_CANCEL and p["symbol"] == "AAPL"]
+    assert len(pkts) >= 1, f"Expected >= 1 Cancel UDP packet for AAPL, got {listener.packets}"
+    assert pkts[0]["qty"] == 0, f"Expected qty=0 for cancel, got {pkts[0]['qty']}"
 
-def test_md_snapshot_on_subscribe():
+
+def test_udp_md_fill():
+    listener = UdpMdListener()
+    listener.start()
+
     s = FixSession()
     s.connect()
     s.logon()
+    now = now_str()
 
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
-
-    # Place a resting order on AMZN
     s.send("D", {
-        "11": "MD-SNAP-BID",
+        "11": "UDP-FILL-BUY",
         "21": "1",
-        "55": "AMZN",
+        "55": "GOOG",
         "54": "1",
         "40": "2",
-        "44": "185.00",
-        "38": "20",
+        "44": "500.00",
+        "38": "100",
         "60": now,
     })
-    assert s.recv().get("150") == "0", "Expected New ack"
+    recv_exec(s)
+    time.sleep(0.1)
 
-    # Now subscribe — should immediately receive a 35=W snapshot
-    subscribe_md(s, "MD-SNAP", ["AMZN"])
+    s.send("D", {
+        "11": "UDP-FILL-SELL",
+        "21": "1",
+        "55": "GOOG",
+        "54": "2",
+        "40": "2",
+        "44": "500.00",
+        "38": "100",
+        "60": now,
+    })
+    recv_exec(s)
 
-    old_timeout = s.sock.gettimeout()
-    s.sock.settimeout(1.0)
-    snapshots = []
-    try:
-        while True:
-            msg = s.recv()
-            if msg.get("35") == "W" and msg.get("55") == "AMZN":
-                snapshots.append(msg)
-    except socket.timeout:
-        pass
-    s.sock.settimeout(old_timeout)
-
-    assert len(snapshots) >= 1, "Expected 35=W snapshot for AMZN after subscribing"
-    n_entries = int(snapshots[0].get("268", "0"))
-    assert n_entries >= 1, f"Expected at least 1 MD entry in AMZN snapshot, got {n_entries}"
-
+    listener.wait_for(3, timeout=2.0)
+    drain(s)
+    listener.stop()
     s.logout()
     s.close()
 
-
-def now_str():
-    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+    pkts = [p for p in listener.packets if p["symbol"] == "GOOG"]
+    fill_rest = [p for p in pkts if p["event_type"] == EVENT_FILL_RESTING]
+    trades    = [p for p in pkts if p["event_type"] == EVENT_TRADE]
+    assert len(fill_rest) >= 1, f"Expected >= 1 FillResting packet, got {pkts}"
+    assert len(trades) >= 1,    f"Expected >= 1 Trade packet, got {pkts}"
+    assert trades[0]["side"] == SIDE_TRADE, f"Expected SIDE_TRADE, got {trades[0]['side']}"
+    assert abs(trades[0]["price"] - 500.0) < 1e-9, f"Expected price 500.0, got {trades[0]['price']}"
 
 
 def test_replace_qty_reduction():
@@ -987,7 +1004,7 @@ def main():
     print("Running FIX integration tests …\n")
     run("Logon / Logout", test_logon_logout)
     run("NewOrderSingle → ExecReport(New)", test_new_order_ack)
-    run("Matching → two Fill ExecReports + MarketDataRefresh", test_order_match_fills)
+    run("Matching → two Fill ExecReports", test_order_match_fills)
     run("OrderCancelRequest → session stays alive", test_order_cancel)
     run("Unknown symbol → ExecReport(Rejected)", test_unknown_symbol_rejected)
     run("Admin REGISTER → new symbol accepted", test_admin_register_symbol)
@@ -995,11 +1012,10 @@ def main():
     run("IOC order → partial fill → PartFill + Canceled", test_ioc_partial_fill)
     run("FOK order → insufficient qty → Canceled, book unchanged", test_fok_insufficient)
     run("FOK order → full qty available → Fill, no Canceled", test_fok_full_fill)
-    run("35=W snapshot on re-logon shows resting orders", test_market_data_snapshot_on_logon)
     run("ExecType=I order status replay on reconnect", test_order_status_on_reconnect)
-    run("35=V subscribe → 35=X on new resting order", test_md_new_resting_order)
-    run("35=V subscribe → 35=X Delete on cancel", test_md_cancel)
-    run("35=V subscribe → 35=W snapshot on subscribe", test_md_snapshot_on_subscribe)
+    run("UDP multicast → NewOrder packet on resting bid", test_udp_md_new_resting_order)
+    run("UDP multicast → Cancel packet on order cancel", test_udp_md_cancel)
+    run("UDP multicast → FillResting + Trade packets on match", test_udp_md_fill)
     run("OrderCancelReplaceRequest → same price qty reduction", test_replace_qty_reduction)
     run("OrderCancelReplaceRequest → price change", test_replace_price_change)
     run("OrderCancelReplaceRequest → unknown order → OrderCancelReject", test_replace_unknown_order)

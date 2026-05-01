@@ -2,7 +2,7 @@
 
 ## Overview
 
-A single-process equity exchange in C++ using the FIX 4.2 protocol. Three threads with a fixed topology; the matching engine is the only thread that touches order book state.
+A single-process equity exchange in C++ using the FIX 4.2 protocol. Three threads with a fixed topology; the matching engine is the only thread that touches order book state. Market data is broadcast via UDP multicast as binary packets rather than over FIX sessions.
 
 ---
 
@@ -30,20 +30,22 @@ flowchart TD
     end
 
     subgraph MD["Market Data Publisher"]
-        MD1["Fill Listener\nConverts fills →\nMarketDataIncrementalRefresh\nBroadcasts to all sessions"]
+        MD1["Fill Listener\nSerializes fills →\nbinary MdPacket\nSends via UDP multicast"]
     end
 
     subgraph AG["Admin Gateway (plain TCP, port 5002)"]
         AG1["Command Handler\nREGISTER <symbol>"]
     end
 
-    Clients -->|"NewOrderSingle (D)\nOrderCancelRequest (F)"| GW
-    GW -->|"ExecutionReport (8)\nMarketDataSnapshotFullRefresh (W)"| Clients
-    GW2 -->|Order / Cancel / SnapshotRequest| ME1
+    MCast["UDP Multicast\n239.1.1.1:5003"]
+
+    Clients -->|"NewOrderSingle (D)\nOrderCancelRequest (F)\nOrderCancelReplaceRequest (G)"| GW
+    GW -->|"ExecutionReport (8)"| Clients
+    GW2 -->|Order / Cancel / Replace| ME1
     ME1 --> ME2
     ME2 -->|Fill events| GW2
     ME2 -->|Fill events| MD1
-    MD1 -->|"MarketDataIncrementalRefresh (X)"| Clients
+    MD1 -->|"binary MdPacket"| MCast
     ADM -->|"REGISTER <symbol>"| AG1
     AG1 -->|registerSymbol| ME1
 ```
@@ -58,9 +60,9 @@ Three threads, fixed topology:
 - **Engine thread** — the only thread that reads or writes order book state; `MatchingEngine::run()` drains a `std::queue<WorkItem>` via `std::mutex + std::condition_variable`
 - **Admin thread** — `AdminGateway` accepts plain-TCP connections and calls `MatchingEngine::registerSymbol()`
 
-`FixGateway` submits work to the engine via `engine_.submit()` / `engine_.cancel()` / `engine_.requestSnapshot()`, all of which lock the work queue. Fill and cancel callbacks are invoked on the engine thread and must be thread-safe.
+`FixGateway` submits work to the engine via `engine_.submit()` / `engine_.cancel()` / `engine_.replace()`, all of which lock the work queue. Fill and cancel callbacks are invoked on the engine thread and must be thread-safe.
 
-`MarketDataPublisher` holds its own mutex and broadcasts fills to all registered FIX sessions. It is called from the engine thread (fills) and the QuickFIX thread (session logon/logout).
+`MarketDataPublisher` holds a single UDP multicast socket and an atomic sequence counter. It is called exclusively from the engine thread (fill/cancel/replace/rested callbacks), so no mutex is needed.
 
 ---
 
@@ -70,11 +72,25 @@ Three threads, fixed topology:
 |-----------|---------|-----|---------|
 | Client → Exchange | NewOrderSingle | D | Submit a limit or market order |
 | Client → Exchange | OrderCancelRequest | F | Cancel a resting order |
+| Client → Exchange | OrderCancelReplaceRequest | G | Modify qty or price of a resting order |
 | Exchange → Client | ExecutionReport | 8 | Ack, fill, cancel confirm, order status replay |
-| Exchange → Client | MarketDataSnapshotFullRefresh | W | Full book depth delivered on logon |
-| Exchange → Client | MarketDataIncrementalRefresh | X | Last trade broadcast to all sessions |
+| UDP multicast | — | — | Binary `MdPacket` (46 bytes) per book event |
 
 FIX version: **4.2**
+
+### Market Data Wire Format (`MdPacket`)
+
+Defined in `src/market_data/MarketDataEvent.h`. Packed struct, little-endian:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `seq` | uint64 | Monotonically increasing; gap detection |
+| `event_type` | uint8 | `NewOrder`=0, `Cancel`=1, `FillResting`=2, `Trade`=3, `ReplaceInPlace`=4, `ReplaceDelete`=5, `ReplaceNew`=6 |
+| `side` | uint8 | `'0'`=bid, `'1'`=ask, `'2'`=trade |
+| `symbol` | char[8] | NUL-padded |
+| `price` | double | IEEE 754 |
+| `qty` | int32 | leaves_qty for book events; fill qty for `Trade` |
+| `exchange_id` | char[16] | NUL-padded |
 
 ---
 
@@ -146,11 +162,7 @@ Every order carries two IDs:
 
 ## Logon Sequence
 
-On client logon, `FixGateway::onLogon` does three things in order:
-
-1. Registers the session with `MarketDataPublisher` (for future fill broadcasts)
-2. Sends `ExecutionReport(ExecType=I)` for every open order belonging to this client's `SenderCompID` — allows reconnecting clients to recover their resting order state
-3. Enqueues a snapshot request on the engine work queue — the engine processes it on its thread, reads all books, and sends a `MarketDataSnapshotFullRefresh (35=W)` per non-empty symbol back to the client
+On client logon, `FixGateway::onLogon` sends `ExecutionReport(ExecType=I)` for every open order belonging to this client's `SenderCompID` — allowing reconnecting clients to recover their resting order state. No market data snapshot is sent; clients receive the live UDP multicast feed going forward.
 
 ---
 
@@ -159,8 +171,8 @@ On client logon, `FixGateway::onLogon` does three things in order:
 - **Single-threaded matching engine** — no locking complexity on the hot path; the gateway posts work onto a queue consumed by one engine thread.
 - **In-memory only** — no persistence; order IDs reset on restart.
 - **One order book per symbol** — `MatchingEngine` holds a `std::unordered_map<string, OrderBook>`.
-- **Broadcast on fill** — every fill emits `ExecutionReport` to both parties and `MarketDataIncrementalRefresh` to all connected sessions.
-- **Snapshot via work queue** — book snapshot requests are routed through the engine work queue so they execute on the engine thread, avoiding any data race with order processing.
+- **UDP multicast market data** — every book event emits a 46-byte binary `MdPacket` to a multicast group. Any number of subscribers receive the same feed with a single `sendto()`. No session management, no subscription protocol.
+- **ExecutionReport to parties only** — fill `ExecutionReport` messages go to the maker and taker over their FIX sessions; book-level market data goes to the multicast group.
 
 ---
 

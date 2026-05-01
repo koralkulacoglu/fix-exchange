@@ -61,10 +61,12 @@ Each client must use its own `SenderCompID` when connecting.
 
 The `[EXCHANGE]` section is not a standard QuickFIX section — it is parsed manually by `main.cpp` and controls exchange-specific behaviour.
 
-| Key | Example | Description |
-|-----|---------|-------------|
-| `Symbols` | `AAPL,MSFT,GOOG,AMZN` | Comma-separated list of symbols to pre-register at startup. Orders for any other symbol are rejected with `ExecutionReport(Rejected)`. Additional symbols can be registered at runtime via the admin gateway. |
-| `AdminPort` | `5002` | TCP port for the plain-text admin gateway. |
+| Key | Example | Default | Description |
+|-----|---------|---------|-------------|
+| `Symbols` | `AAPL,MSFT,GOOG,AMZN` | — | Comma-separated list of symbols to pre-register at startup. Orders for any other symbol are rejected with `ExecutionReport(Rejected)`. Additional symbols can be registered at runtime via the admin gateway. |
+| `AdminPort` | `5002` | `5002` | TCP port for the plain-text admin gateway. |
+| `MulticastGroup` | `239.1.1.1` | `239.1.1.1` | IPv4 multicast group address for the UDP market data feed. Must be in the locally-scoped range `239.0.0.0/8`. |
+| `MulticastPort` | `5003` | `5003` | UDP port subscribers bind to when joining the multicast group. |
 
 ### Admin gateway
 
@@ -124,4 +126,6 @@ SocketAcceptPort=5001
 [EXCHANGE]
 Symbols=AAPL,MSFT,GOOG,AMZN
 AdminPort=5002
+MulticastGroup=239.1.1.1
+MulticastPort=5003
 ```

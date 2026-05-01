@@ -1,8 +1,6 @@
 #pragma once
 #include "engine/Order.h"
 #include <quickfix/fix42/ExecutionReport.h>
-#include <quickfix/fix42/MarketDataIncrementalRefresh.h>
-#include <quickfix/fix42/MarketDataSnapshotFullRefresh.h>
 #include <quickfix/fix42/OrderCancelReject.h>
 #include <string>
 
@@ -75,26 +73,6 @@ inline FIX42::ExecutionReport make_tif_cancel_report(const engine::Order& order)
     return msg;
 }
 
-inline FIX42::MarketDataIncrementalRefresh make_md_increment(
-    char action,
-    char entry_type,
-    const std::string& symbol,
-    double price,
-    int qty,
-    const std::string& entry_id = {})
-{
-    FIX42::MarketDataIncrementalRefresh msg;
-    FIX42::MarketDataIncrementalRefresh::NoMDEntries g;
-    g.set(FIX::MDUpdateAction(action));
-    g.set(FIX::MDEntryType(entry_type));
-    g.set(FIX::Symbol(symbol));
-    g.set(FIX::MDEntryPx(price));
-    g.set(FIX::MDEntrySize(qty));
-    if (!entry_id.empty()) g.set(FIX::MDEntryID(entry_id));
-    msg.addGroup(g);
-    return msg;
-}
-
 inline FIX42::ExecutionReport make_order_status_report(const engine::Order& order)
 {
     char ord_status = (order.leaves_qty < order.qty) ? '1' : '0';
@@ -116,28 +94,6 @@ inline FIX42::ExecutionReport make_order_status_report(const engine::Order& orde
     msg.set(FIX::OrderQty(order.qty));
     if (order.type == '2')
         msg.set(FIX::Price(order.price));
-    return msg;
-}
-
-inline FIX42::MarketDataSnapshotFullRefresh make_market_data_snapshot(
-    const engine::BookSnapshot& snap)
-{
-    FIX42::MarketDataSnapshotFullRefresh msg;
-    msg.set(FIX::Symbol(snap.symbol));
-    for (const auto& level : snap.bids) {
-        FIX42::MarketDataSnapshotFullRefresh::NoMDEntries g;
-        g.set(FIX::MDEntryType('0'));
-        g.set(FIX::MDEntryPx(level.price));
-        g.set(FIX::MDEntrySize(level.qty));
-        msg.addGroup(g);
-    }
-    for (const auto& level : snap.asks) {
-        FIX42::MarketDataSnapshotFullRefresh::NoMDEntries g;
-        g.set(FIX::MDEntryType('1'));
-        g.set(FIX::MDEntryPx(level.price));
-        g.set(FIX::MDEntrySize(level.qty));
-        msg.addGroup(g);
-    }
     return msg;
 }
 

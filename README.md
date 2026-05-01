@@ -1,6 +1,6 @@
 # fix-exchange
 
-A single-process equity exchange written in C++. Clients connect over TCP using the FIX 4.2 protocol to submit orders and receive execution reports and market data. A price-time priority matching engine runs on a dedicated thread.
+A single-process equity exchange written in C++. Clients connect over TCP using the FIX 4.2 protocol to submit orders and receive execution reports. Market data is broadcast over UDP multicast as binary packets. A price-time priority matching engine runs on a dedicated thread.
 
 ---
 
@@ -15,13 +15,14 @@ flowchart LR
     GW["FIX Gateway\n(QuickFIX acceptor)"]
     ME["Matching Engine\n(single thread)"]
     MDP["Market Data\nPublisher"]
+    MCast["UDP Multicast\n239.1.1.1:5003"]
 
     Clients -->|"D / F"| GW
-    GW -->|"8 / W"| Clients
-    GW -->|"Order / Cancel\nSnapshotRequest"| ME
+    GW -->|"8"| Clients
+    GW -->|"Order / Cancel"| ME
     ME -->|"Fill events"| GW
     ME -->|"Fill events"| MDP
-    MDP -->|"X"| Clients
+    MDP -->|"binary packets"| MCast
     Admin -->|"REGISTER"| ME
 ```
 
@@ -96,7 +97,7 @@ The binary must be built first. Tests connect over raw TCP on port 5001 using ha
 |------|-------------|
 | Logon / Logout | Session establishment and clean teardown |
 | NewOrderSingle → ExecReport(New) | Order acknowledgment |
-| Order matching | Two crossing limit orders produce fill ExecReports and a MarketDataIncrementalRefresh |
+| Order matching | Two crossing limit orders produce fill ExecReports |
 | OrderCancelRequest | Resting order cancelled, ExecReport(Canceled) returned |
 | Unknown symbol rejected | Orders for unregistered symbols get ExecReport(Rejected) |
 | Admin REGISTER | New symbol registered at runtime via admin port, then accepted |
@@ -104,8 +105,10 @@ The binary must be built first. Tests connect over raw TCP on port 5001 using ha
 | IOC — partial fill | IOC order fills available qty, remainder cancelled |
 | FOK — insufficient qty | FOK order rejected outright if full qty unavailable |
 | FOK — full fill | FOK order executes completely when full qty available |
-| Snapshot on logon | 35=W snapshot delivered per symbol on client logon |
 | Order status on reconnect | ExecType=I reports replayed for client's open orders on reconnect |
+| UDP market data — new order | NewOrder packet on UDP multicast when a limit order rests |
+| UDP market data — cancel | Cancel packet on UDP multicast when a resting order is cancelled |
+| UDP market data — fill | FillResting + Trade packets on UDP multicast when orders match |
 
 ---
 
@@ -130,6 +133,8 @@ SocketAcceptPort=5001
 [EXCHANGE]
 Symbols=AAPL,MSFT,GOOG,AMZN
 AdminPort=5002
+MulticastGroup=239.1.1.1
+MulticastPort=5003
 ```
 
 ---
@@ -140,9 +145,35 @@ AdminPort=5002
 |-----------|---------|-----|---------|
 | Client → Exchange | NewOrderSingle | D | Submit a limit or market order |
 | Client → Exchange | OrderCancelRequest | F | Cancel a resting order |
+| Client → Exchange | OrderCancelReplaceRequest | G | Modify qty or price of a resting order |
 | Exchange → Client | ExecutionReport | 8 | Ack, fill, cancel confirm, or order status |
-| Exchange → Client | MarketDataSnapshotFullRefresh | W | Full book depth on client logon |
-| Exchange → Client | MarketDataIncrementalRefresh | X | Last trade broadcast to all sessions |
+| UDP multicast | — | — | Binary market data packets (see below) |
+
+### UDP Market Data
+
+Market data is published as 46-byte binary packets to a UDP multicast group (default `239.1.1.1:5003`). Any number of subscribers can receive the feed by joining the group — no FIX session or subscription message required.
+
+| Field | Type | Size | Notes |
+|-------|------|------|-------|
+| `seq` | uint64 | 8 | Monotonically increasing; use to detect gaps |
+| `event_type` | uint8 | 1 | See table below |
+| `side` | uint8 | 1 | `'0'`=bid, `'1'`=ask, `'2'`=trade |
+| `symbol` | char[8] | 8 | NUL-padded |
+| `price` | double | 8 | IEEE 754 little-endian |
+| `qty` | int32 | 4 | leaves_qty for book events; fill qty for Trade |
+| `exchange_id` | char[16] | 16 | NUL-padded |
+
+| `event_type` | Value | Meaning |
+|---|---|---|
+| `NewOrder` | 0 | Limit order rested on the book |
+| `Cancel` | 1 | Resting order removed |
+| `FillResting` | 2 | Resting side updated by a fill (qty = remaining; 0 = fully consumed) |
+| `Trade` | 3 | Trade print (qty = filled quantity) |
+| `ReplaceInPlace` | 4 | Qty-only reduction at same price |
+| `ReplaceDelete` | 5 | First packet of a price-change replace — removes old price level |
+| `ReplaceNew` | 6 | Second packet of a price-change replace — adds at new price level |
+
+There is no recovery channel. Subscribers should use `seq` to detect gaps and handle them at the application level.
 
 ### ExecutionReport ExecTypes (tag 150)
 
@@ -178,7 +209,8 @@ fix-exchange/
 │   │   ├── OrderBook.h/.cpp      Price-time priority book per symbol
 │   │   └── MatchingEngine.h/.cpp Routes orders to books, engine thread
 │   └── market_data/
-│       └── MarketDataPublisher.h/.cpp  Broadcasts fills to all sessions
+│       ├── MarketDataEvent.h           Binary UDP packet struct + EventType enum
+│       └── MarketDataPublisher.h/.cpp  Broadcasts fills via UDP multicast
 └── tests/
     └── test_exchange.py          Integration test suite (pure Python 3)
 ```

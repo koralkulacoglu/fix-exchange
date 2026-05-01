@@ -1,23 +1,18 @@
 #pragma once
+#include "MarketDataEvent.h"
 #include "engine/Order.h"
-#include <quickfix/SessionID.h>
-#include <quickfix/fix42/MarketDataIncrementalRefresh.h>
-#include <map>
-#include <mutex>
-#include <set>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <atomic>
 #include <string>
-#include <unordered_map>
-#include <vector>
 
 namespace market_data {
 
 class MarketDataPublisher {
 public:
-    void add_session(const FIX::SessionID& id);
-    void remove_session(const FIX::SessionID& id);
-
-    void subscribe(const FIX::SessionID& id, const std::vector<std::string>& symbols);
-    void unsubscribe(const FIX::SessionID& id, const std::vector<std::string>& symbols);
+    MarketDataPublisher(const std::string& group, uint16_t port);
+    ~MarketDataPublisher();
 
     void on_fill(const engine::Fill& maker);
     void on_new_order(const engine::Order& order, int leaves_qty);
@@ -25,11 +20,11 @@ public:
     void on_replace(const engine::ReplaceRequest& req, int new_leaves_qty, double old_price);
 
 private:
-    void send_to_symbol(const std::string& symbol, FIX42::MarketDataIncrementalRefresh& msg);
+    void send(MdPacket& pkt);
 
-    std::mutex mutex_;
-    std::unordered_map<std::string, std::set<FIX::SessionID>> symbol_subscribers_;
-    std::map<FIX::SessionID, std::set<std::string>> session_symbols_;
+    int sock_fd_{-1};
+    sockaddr_in dest_{};
+    std::atomic<uint64_t> seq_{0};
 };
 
 } // namespace market_data

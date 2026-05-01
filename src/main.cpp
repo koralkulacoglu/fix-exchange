@@ -63,7 +63,12 @@ int main(int argc, char* argv[]) {
         auto symbols   = parse_symbols(config_path);
         int  admin_port = parse_admin_port(config_path);
 
-        market_data::MarketDataPublisher publisher;
+        std::string mcast_group = read_exchange_value(config_path, "MulticastGroup");
+        if (mcast_group.empty()) mcast_group = "239.1.1.1";
+        std::string mcast_port_str = read_exchange_value(config_path, "MulticastPort");
+        uint16_t mcast_port = mcast_port_str.empty()
+            ? 5003 : static_cast<uint16_t>(std::stoi(mcast_port_str));
+        market_data::MarketDataPublisher publisher(mcast_group, mcast_port);
 
         gateway::FixGateway* gw_ptr = nullptr;
 

@@ -1,7 +1,6 @@
 #include "FixGateway.h"
 #include "MessageFactory.h"
 #include "market_data/MarketDataPublisher.h"
-#include <quickfix/fix42/MarketDataRequest.h>
 #include <quickfix/fix42/NewOrderSingle.h>
 #include <quickfix/fix42/OrderCancelReplaceRequest.h>
 #include <quickfix/fix42/OrderCancelRequest.h>
@@ -16,8 +15,6 @@ FixGateway::FixGateway(engine::MatchingEngine& engine,
 
 void FixGateway::onLogon(const FIX::SessionID& id) {
     std::cout << "Logon: " << id << "\n";
-    publisher_.add_session(id);
-
     std::string client_id = id.getSenderCompID().getValue();
     std::vector<engine::Order> client_orders;
     {
@@ -31,18 +28,10 @@ void FixGateway::onLogon(const FIX::SessionID& id) {
         FIX::Session::sendToTarget(msg, id);
     }
 
-    engine_.requestSnapshot([id](std::vector<engine::BookSnapshot> snaps) {
-        for (const auto& snap : snaps) {
-            if (snap.bids.empty() && snap.asks.empty()) continue;
-            auto msg = gateway::make_market_data_snapshot(snap);
-            FIX::Session::sendToTarget(msg, id);
-        }
-    });
 }
 
 void FixGateway::onLogout(const FIX::SessionID& id) {
     std::cout << "Logout: " << id << "\n";
-    publisher_.remove_session(id);
 }
 
 void FixGateway::fromApp(const FIX::Message& msg, const FIX::SessionID& id)
@@ -271,33 +260,5 @@ void FixGateway::onOrderRested(const engine::Order& order, int leaves_qty) {
     publisher_.on_new_order(order, leaves_qty);
 }
 
-void FixGateway::onMessage(const FIX42::MarketDataRequest& msg, const FIX::SessionID& session_id) {
-    FIX::SubscriptionRequestType subType; msg.get(subType);
-    bool subscribe = (subType.getValue() == '1');
-
-    FIX::NoRelatedSym noSym; msg.get(noSym);
-    std::vector<std::string> symbols;
-    for (int i = 1; i <= noSym.getValue(); ++i) {
-        FIX42::MarketDataRequest::NoRelatedSym grp;
-        msg.getGroup(i, grp);
-        FIX::Symbol sym; grp.get(sym);
-        symbols.push_back(sym.getValue());
-    }
-
-    if (subscribe) {
-        publisher_.subscribe(session_id, symbols);
-        // Send immediate 35=W snapshot for each subscribed symbol
-        engine_.requestSnapshot([session_id, symbols](std::vector<engine::BookSnapshot> snaps) {
-            for (const auto& snap : snaps) {
-                if (std::find(symbols.begin(), symbols.end(), snap.symbol) == symbols.end()) continue;
-                if (snap.bids.empty() && snap.asks.empty()) continue;
-                auto msg = gateway::make_market_data_snapshot(snap);
-                FIX::Session::sendToTarget(msg, session_id);
-            }
-        });
-    } else {
-        publisher_.unsubscribe(session_id, symbols);
-    }
-}
 
 } // namespace gateway
