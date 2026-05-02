@@ -29,19 +29,16 @@ The file has a `[DEFAULT]` section (values inherited by all sessions), one or mo
 
 ## [SESSION] Settings
 
-Each `[SESSION]` block represents one client connection the exchange will accept. All `[DEFAULT]` values are inherited and can be overridden per session.
+`[SESSION]` blocks are optional. Each one pre-registers a static client CompID that can connect without going through `CLAIM-SESSION`. For most use cases the session pool (`SessionPool` in `[EXCHANGE]`) is sufficient and no `[SESSION]` blocks are needed.
 
 | Key | Example | Description |
 |-----|---------|-------------|
 | `SenderCompID` | `EXCHANGE` | The exchange's CompID. Clients must set `TargetCompID` to this value. |
-| `TargetCompID` | `CLIENT` | The expected client CompID. A connecting client must send `SenderCompID=CLIENT`. |
-| `SocketAcceptPort` | `5001` | TCP port to listen on. |
+| `TargetCompID` | `ALGO1` | The expected client CompID. A connecting client must send `SenderCompID=ALGO1`. |
 
-### Multiple clients
+### Session pool (recommended)
 
-The recommended way to support multiple simultaneous FIX clients is the session pool (`SessionPool` in `[EXCHANGE]`). At startup the exchange pre-allocates `N` anonymous session slots (`S1`–`SN`) and exposes `CLAIM-SESSION` / `RELEASE-SESSION` on the admin gateway so clients discover their `SenderCompID` at runtime.
-
-Additional `[SESSION]` blocks with fixed `TargetCompID` values can still be added manually for static clients that use a known CompID.
+The session pool pre-allocates `N` anonymous slots (`S1`–`SN`) at startup. Clients call `CLAIM-SESSION` on the admin gateway to obtain a `SenderCompID`, connect to the FIX port using it, and return the slot with `RELEASE-SESSION` when done. Pool size is controlled by `SessionPool` in `[EXCHANGE]`.
 
 ---
 
@@ -96,11 +93,8 @@ EndTime=00:00:00
 HeartBtInt=30
 ResetOnLogon=Y
 ResetOnLogout=Y
-
-[SESSION]
-SenderCompID=EXCHANGE
-TargetCompID=CLIENT
 SocketAcceptPort=5001
+SocketNodelay=Y
 
 [EXCHANGE]
 Symbols=AAPL,MSFT,GOOG,AMZN

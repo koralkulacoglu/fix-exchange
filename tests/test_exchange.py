@@ -46,7 +46,7 @@ def start_exchange():
             time.sleep(0.2)
     proc.terminate()
     raise RuntimeError("Exchange failed to start within 4 seconds")
-SENDER = "CLIENT"
+
 TARGET = "EXCHANGE"
 SEP = "\x01"
 
@@ -63,7 +63,7 @@ def _checksum(data: str) -> str:
     return f"{sum(data.encode('ascii')) % 256:03d}"
 
 
-def build_message(msg_type: str, seq: int, body_fields: dict, sender: str = SENDER) -> bytes:
+def build_message(msg_type: str, seq: int, body_fields: dict, sender: str) -> bytes:
     sending_time = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
     header_body = (
         f"35={msg_type}{SEP}"
@@ -91,7 +91,7 @@ def parse_fields(raw: bytes) -> dict:
 
 
 class FixSession:
-    def __init__(self, sender: str = SENDER):
+    def __init__(self, sender: str):
         self.sender = sender
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.settimeout(5)
@@ -246,38 +246,33 @@ def run(name, fn):
         failures.append(name)
 
 
-def test_logon_logout():
-    s = FixSession()
-    s.connect()
-    s.logon()
-    s.logout()
-    s.close()
+ADMIN_PORT = 5002
 
 
-def test_new_order_ack():
-    s = FixSession()
-    s.connect()
-    s.logon()
+def admin_send(command: str) -> str:
+    """Send a single command to the admin port and return the response line."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(3)
+    sock.connect(("127.0.0.1", ADMIN_PORT))
+    sock.sendall((command + "\n").encode("ascii"))
+    resp = b""
+    while b"\n" not in resp:
+        chunk = sock.recv(256)
+        if not chunk:
+            break
+        resp += chunk
+    sock.close()
+    return resp.decode("ascii").strip()
 
-    s.send("D", {
-        "11": "ORD-001",
-        "21": "1",
-        "55": "AAPL",
-        "54": "1",       # buy
-        "40": "2",       # limit
-        "44": "150.00",
-        "38": "100",
-        "60": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S"),
-    })
 
-    # Expect New ack (ExecType=0)
-    resp = s.recv()
-    assert resp.get("35") == "8", f"Expected ExecutionReport, got {resp.get('35')}"
-    assert resp.get("150") == "0", f"Expected ExecType=New(0), got {resp.get('150')}"
-    assert resp.get("39") == "0", f"Expected OrdStatus=New(0), got {resp.get('39')}"
+def claim_session() -> str:
+    resp = admin_send("CLAIM-SESSION")
+    assert resp.startswith("OK "), f"CLAIM-SESSION failed: {resp!r}"
+    return resp.split()[1]
 
-    s.logout()
-    s.close()
+
+def release_session(comp_id: str) -> None:
+    admin_send(f"RELEASE-SESSION {comp_id}")
 
 
 def recv_exec(session):
@@ -304,134 +299,171 @@ def drain(session, timeout=0.4):
     return exec_reports
 
 
+def now_str():
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+
+
+def test_logon_logout():
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
+
+
+def test_new_order_ack():
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
+
+        s.send("D", {
+            "11": "ORD-001",
+            "21": "1",
+            "55": "AAPL",
+            "54": "1",       # buy
+            "40": "2",       # limit
+            "44": "150.00",
+            "38": "100",
+            "60": now_str(),
+        })
+
+        resp = s.recv()
+        assert resp.get("35") == "8", f"Expected ExecutionReport, got {resp.get('35')}"
+        assert resp.get("150") == "0", f"Expected ExecType=New(0), got {resp.get('150')}"
+        assert resp.get("39") == "0", f"Expected OrdStatus=New(0), got {resp.get('39')}"
+
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
+
+
 def test_order_match_fills():
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+        now = now_str()
 
-    # Buy 100 MSFT @ 300
-    s.send("D", {
-        "11": "ORD-BUY",
-        "21": "1",
-        "55": "MSFT",
-        "54": "1",
-        "40": "2",
-        "44": "300.00",
-        "38": "100",
-        "60": now,
-    })
-    ack_buy = recv_exec(s)
-    assert ack_buy.get("150") == "0", "Buy ack should be ExecType=New"
+        # Buy 100 MSFT @ 300
+        s.send("D", {
+            "11": "ORD-BUY",
+            "21": "1",
+            "55": "MSFT",
+            "54": "1",
+            "40": "2",
+            "44": "300.00",
+            "38": "100",
+            "60": now,
+        })
+        ack_buy = recv_exec(s)
+        assert ack_buy.get("150") == "0", "Buy ack should be ExecType=New"
 
-    # Sell 100 MSFT @ 300 (crosses the resting buy)
-    s.send("D", {
-        "11": "ORD-SELL",
-        "21": "1",
-        "55": "MSFT",
-        "54": "2",
-        "40": "2",
-        "44": "300.00",
-        "38": "100",
-        "60": now,
-    })
-    ack_sell = recv_exec(s)
-    assert ack_sell.get("150") == "0", "Sell ack should be ExecType=New"
+        # Sell 100 MSFT @ 300 (crosses the resting buy)
+        s.send("D", {
+            "11": "ORD-SELL",
+            "21": "1",
+            "55": "MSFT",
+            "54": "2",
+            "40": "2",
+            "44": "300.00",
+            "38": "100",
+            "60": now,
+        })
+        ack_sell = recv_exec(s)
+        assert ack_sell.get("150") == "0", "Sell ack should be ExecType=New"
 
-    reports = drain(s)
-    assert len(reports) == 2, f"Expected 2 fill ExecReports, got {len(reports)}"
-    for r in reports:
-        assert r.get("150") in ("1", "2"), f"Expected PartFill or Fill ExecType, got {r.get('150')}"
+        reports = drain(s)
+        assert len(reports) == 2, f"Expected 2 fill ExecReports, got {len(reports)}"
+        for r in reports:
+            assert r.get("150") in ("1", "2"), f"Expected PartFill or Fill ExecType, got {r.get('150')}"
 
-    s.logout()
-    s.close()
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_order_cancel():
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+        now = now_str()
 
-    # Place a resting limit buy that won't match
-    s.send("D", {
-        "11": "ORD-CXLTEST",
-        "21": "1",
-        "55": "GOOG",
-        "54": "1",
-        "40": "2",
-        "44": "100.00",
-        "38": "50",
-        "60": now,
-    })
-    ack = s.recv()
-    assert ack.get("150") == "0", "Expected New ack before cancel"
+        # Place a resting limit buy that won't match
+        s.send("D", {
+            "11": "ORD-CXLTEST",
+            "21": "1",
+            "55": "GOOG",
+            "54": "1",
+            "40": "2",
+            "44": "100.00",
+            "38": "50",
+            "60": now,
+        })
+        ack = s.recv()
+        assert ack.get("150") == "0", "Expected New ack before cancel"
 
-    # Cancel it
-    s.send("F", {
-        "41": "ORD-CXLTEST",
-        "11": "ORD-CXLTEST-CXL",
-        "55": "GOOG",
-        "54": "1",
-        "38": "50",
-        "60": now,
-    })
+        # Cancel it
+        s.send("F", {
+            "41": "ORD-CXLTEST",
+            "11": "ORD-CXLTEST-CXL",
+            "55": "GOOG",
+            "54": "1",
+            "38": "50",
+            "60": now,
+        })
 
-    # Expect ExecReport(Canceled) — ExecType=4, OrdStatus=4
-    confirm = s.recv()
-    assert confirm.get("35") == "8", f"Expected ExecutionReport, got {confirm.get('35')}"
-    assert confirm.get("150") == "4", f"Expected ExecType=Canceled(4), got {confirm.get('150')}"
-    assert confirm.get("39") == "4", f"Expected OrdStatus=Canceled(4), got {confirm.get('39')}"
+        confirm = s.recv()
+        assert confirm.get("35") == "8", f"Expected ExecutionReport, got {confirm.get('35')}"
+        assert confirm.get("150") == "4", f"Expected ExecType=Canceled(4), got {confirm.get('150')}"
+        assert confirm.get("39") == "4", f"Expected OrdStatus=Canceled(4), got {confirm.get('39')}"
 
-    s.logout()
-    s.close()
-
-
-ADMIN_PORT = 5002
-
-
-def admin_send(command: str) -> str:
-    """Send a single command to the admin port and return the response line."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(3)
-    sock.connect(("127.0.0.1", ADMIN_PORT))
-    sock.sendall((command + "\n").encode("ascii"))
-    resp = b""
-    while b"\n" not in resp:
-        chunk = sock.recv(256)
-        if not chunk:
-            break
-        resp += chunk
-    sock.close()
-    return resp.decode("ascii").strip()
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_unknown_symbol_rejected():
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    s.send("D", {
-        "11": "ORD-FAKE",
-        "21": "1",
-        "55": "FAKE",
-        "54": "1",
-        "40": "2",
-        "44": "10.00",
-        "38": "1",
-        "60": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S"),
-    })
+        s.send("D", {
+            "11": "ORD-FAKE",
+            "21": "1",
+            "55": "FAKE",
+            "54": "1",
+            "40": "2",
+            "44": "10.00",
+            "38": "1",
+            "60": now_str(),
+        })
 
-    resp = s.recv()
-    assert resp.get("35") == "8", f"Expected ExecutionReport, got {resp.get('35')}"
-    assert resp.get("150") == "8", f"Expected ExecType=Rejected(8), got {resp.get('150')}"
-    assert resp.get("39") == "8", f"Expected OrdStatus=Rejected(8), got {resp.get('39')}"
-    assert "Unknown symbol" in resp.get("58", ""), f"Expected reject reason in tag 58, got {resp.get('58')}"
+        resp = s.recv()
+        assert resp.get("35") == "8", f"Expected ExecutionReport, got {resp.get('35')}"
+        assert resp.get("150") == "8", f"Expected ExecType=Rejected(8), got {resp.get('150')}"
+        assert resp.get("39") == "8", f"Expected OrdStatus=Rejected(8), got {resp.get('39')}"
+        assert "Unknown symbol" in resp.get("58", ""), f"Expected reject reason in tag 58, got {resp.get('58')}"
 
-    s.logout()
-    s.close()
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_admin_register_symbol():
@@ -444,560 +476,603 @@ def test_admin_register_symbol():
     assert resp2.startswith("ERROR"), f"Expected ERROR on duplicate, got: {resp2!r}"
 
     # Now an order for TSLA should be accepted
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    s.send("D", {
-        "11": "ORD-TSLA",
-        "21": "1",
-        "55": "TSLA",
-        "54": "1",
-        "40": "2",
-        "44": "200.00",
-        "38": "10",
-        "60": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S"),
-    })
+        s.send("D", {
+            "11": "ORD-TSLA",
+            "21": "1",
+            "55": "TSLA",
+            "54": "1",
+            "40": "2",
+            "44": "200.00",
+            "38": "10",
+            "60": now_str(),
+        })
 
-    ack = s.recv()
-    assert ack.get("150") == "0", f"Expected ExecType=New(0) for TSLA order, got {ack.get('150')}"
+        ack = s.recv()
+        assert ack.get("150") == "0", f"Expected ExecType=New(0) for TSLA order, got {ack.get('150')}"
 
-    s.logout()
-    s.close()
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_ioc_no_fill():
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+        now = now_str()
 
-    s.send("D", {
-        "11": "ORD-IOC-NOFILL",
-        "21": "1",
-        "55": "AMZN",
-        "54": "1",
-        "40": "2",
-        "44": "100.00",
-        "38": "50",
-        "59": "3",       # IOC
-        "60": now,
-    })
+        s.send("D", {
+            "11": "ORD-IOC-NOFILL",
+            "21": "1",
+            "55": "AMZN",
+            "54": "1",
+            "40": "2",
+            "44": "100.00",
+            "38": "50",
+            "59": "3",       # IOC
+            "60": now,
+        })
 
-    ack = s.recv()
-    assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
+        ack = s.recv()
+        assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
 
-    cancel = s.recv()
-    assert cancel.get("35") == "8", f"Expected ExecutionReport, got {cancel.get('35')}"
-    assert cancel.get("150") == "4", f"Expected ExecType=Canceled(4), got {cancel.get('150')}"
-    assert cancel.get("39") == "4", f"Expected OrdStatus=Canceled(4), got {cancel.get('39')}"
+        cancel = s.recv()
+        assert cancel.get("35") == "8", f"Expected ExecutionReport, got {cancel.get('35')}"
+        assert cancel.get("150") == "4", f"Expected ExecType=Canceled(4), got {cancel.get('150')}"
+        assert cancel.get("39") == "4", f"Expected OrdStatus=Canceled(4), got {cancel.get('39')}"
 
-    s.logout()
-    s.close()
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_ioc_partial_fill():
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+        now = now_str()
 
-    # Resting sell: 50 @ $200 (GTC)
-    s.send("D", {
-        "11": "ORD-IOC-SELL",
-        "21": "1",
-        "55": "AMZN",
-        "54": "2",
-        "40": "2",
-        "44": "200.00",
-        "38": "50",
-        "60": now,
-    })
-    ack_sell = s.recv()
-    assert ack_sell.get("150") == "0", "Expected New ack for resting sell"
+        # Resting sell: 50 @ $200 (GTC)
+        s.send("D", {
+            "11": "ORD-IOC-SELL",
+            "21": "1",
+            "55": "AMZN",
+            "54": "2",
+            "40": "2",
+            "44": "200.00",
+            "38": "50",
+            "60": now,
+        })
+        ack_sell = s.recv()
+        assert ack_sell.get("150") == "0", "Expected New ack for resting sell"
 
-    # IOC buy: 100 @ $210 — fills 50, remaining 50 canceled
-    s.send("D", {
-        "11": "ORD-IOC-BUY",
-        "21": "1",
-        "55": "AMZN",
-        "54": "1",
-        "40": "2",
-        "44": "210.00",
-        "38": "100",
-        "59": "3",       # IOC
-        "60": now,
-    })
-    ack_buy = s.recv()
-    assert ack_buy.get("150") == "0", "Expected New ack for IOC buy"
+        # IOC buy: 100 @ $210 — fills 50, remaining 50 canceled
+        s.send("D", {
+            "11": "ORD-IOC-BUY",
+            "21": "1",
+            "55": "AMZN",
+            "54": "1",
+            "40": "2",
+            "44": "210.00",
+            "38": "100",
+            "59": "3",       # IOC
+            "60": now,
+        })
+        ack_buy = s.recv()
+        assert ack_buy.get("150") == "0", "Expected New ack for IOC buy"
 
-    # Collect: 2 fill ExecReports (maker + taker) and 1 Canceled for IOC remainder
-    fill_reports = []
-    cancel_reports = []
-    for _ in range(4):
-        try:
-            msg = s.recv()
-            if msg.get("35") != "8":
-                continue
-            if msg.get("150") == "4":
-                cancel_reports.append(msg)
-            else:
-                fill_reports.append(msg)
-        except socket.timeout:
-            break
+        # Collect: 2 fill ExecReports (maker + taker) and 1 Canceled for IOC remainder
+        fill_reports = []
+        cancel_reports = []
+        for _ in range(4):
+            try:
+                msg = s.recv()
+                if msg.get("35") != "8":
+                    continue
+                if msg.get("150") == "4":
+                    cancel_reports.append(msg)
+                else:
+                    fill_reports.append(msg)
+            except socket.timeout:
+                break
 
-    assert len(fill_reports) == 2, f"Expected 2 fill ExecReports, got {len(fill_reports)}"
-    for r in fill_reports:
-        assert r.get("150") in ("1", "2"), f"Expected PartFill or Fill, got {r.get('150')}"
-    assert len(cancel_reports) == 1, f"Expected 1 Canceled for IOC remainder, got {len(cancel_reports)}"
-    assert cancel_reports[0].get("11") == "ORD-IOC-BUY", "Canceled should be for the IOC buy"
+        assert len(fill_reports) == 2, f"Expected 2 fill ExecReports, got {len(fill_reports)}"
+        for r in fill_reports:
+            assert r.get("150") in ("1", "2"), f"Expected PartFill or Fill, got {r.get('150')}"
+        assert len(cancel_reports) == 1, f"Expected 1 Canceled for IOC remainder, got {len(cancel_reports)}"
+        assert cancel_reports[0].get("11") == "ORD-IOC-BUY", "Canceled should be for the IOC buy"
 
-    s.logout()
-    s.close()
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_fok_insufficient():
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+        now = now_str()
 
-    # Resting sell: 50 @ $200 (GTC) — not enough to fill a 100-lot FOK
-    s.send("D", {
-        "11": "ORD-FOK-SELL",
-        "21": "1",
-        "55": "AMZN",
-        "54": "2",
-        "40": "2",
-        "44": "200.00",
-        "38": "50",
-        "60": now,
-    })
-    ack_sell = s.recv()
-    assert ack_sell.get("150") == "0", "Expected New ack for resting sell"
+        # Resting sell: 50 @ $200 (GTC) — not enough to fill a 100-lot FOK
+        s.send("D", {
+            "11": "ORD-FOK-SELL",
+            "21": "1",
+            "55": "AMZN",
+            "54": "2",
+            "40": "2",
+            "44": "200.00",
+            "38": "50",
+            "60": now,
+        })
+        ack_sell = s.recv()
+        assert ack_sell.get("150") == "0", "Expected New ack for resting sell"
 
-    # FOK buy: 100 @ $210 — only 50 available, rejected outright
-    s.send("D", {
-        "11": "ORD-FOK-BUY",
-        "21": "1",
-        "55": "AMZN",
-        "54": "1",
-        "40": "2",
-        "44": "210.00",
-        "38": "100",
-        "59": "4",       # FOK
-        "60": now,
-    })
-    ack_fok = s.recv()
-    assert ack_fok.get("150") == "0", "Expected New ack for FOK buy"
+        # FOK buy: 100 @ $210 — only 50 available, rejected outright
+        s.send("D", {
+            "11": "ORD-FOK-BUY",
+            "21": "1",
+            "55": "AMZN",
+            "54": "1",
+            "40": "2",
+            "44": "210.00",
+            "38": "100",
+            "59": "4",       # FOK
+            "60": now,
+        })
+        ack_fok = s.recv()
+        assert ack_fok.get("150") == "0", "Expected New ack for FOK buy"
 
-    cancel = s.recv()
-    assert cancel.get("35") == "8", f"Expected ExecutionReport, got {cancel.get('35')}"
-    assert cancel.get("150") == "4", f"Expected ExecType=Canceled(4), got {cancel.get('150')}"
-    assert cancel.get("11") == "ORD-FOK-BUY", "Canceled should be for the FOK buy"
+        cancel = s.recv()
+        assert cancel.get("35") == "8", f"Expected ExecutionReport, got {cancel.get('35')}"
+        assert cancel.get("150") == "4", f"Expected ExecType=Canceled(4), got {cancel.get('150')}"
+        assert cancel.get("11") == "ORD-FOK-BUY", "Canceled should be for the FOK buy"
 
-    # Book should be untouched: resting sell must still be cancelable
-    s.send("F", {
-        "41": "ORD-FOK-SELL",
-        "11": "ORD-FOK-SELL-CXL",
-        "55": "AMZN",
-        "54": "2",
-        "38": "50",
-        "60": now,
-    })
-    confirm = s.recv()
-    assert confirm.get("150") == "4", \
-        f"Expected Canceled for resting sell (book unchanged), got {confirm.get('150')}"
+        # Book should be untouched: resting sell must still be cancelable
+        s.send("F", {
+            "41": "ORD-FOK-SELL",
+            "11": "ORD-FOK-SELL-CXL",
+            "55": "AMZN",
+            "54": "2",
+            "38": "50",
+            "60": now,
+        })
+        confirm = s.recv()
+        assert confirm.get("150") == "4", \
+            f"Expected Canceled for resting sell (book unchanged), got {confirm.get('150')}"
 
-    s.logout()
-    s.close()
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_fok_full_fill():
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+        now = now_str()
 
-    # Resting sell: 100 @ $200 (GTC) — exactly enough for the FOK
-    s.send("D", {
-        "11": "ORD-FOK-FULL-SELL",
-        "21": "1",
-        "55": "AMZN",
-        "54": "2",
-        "40": "2",
-        "44": "200.00",
-        "38": "100",
-        "60": now,
-    })
-    ack_sell = s.recv()
-    assert ack_sell.get("150") == "0", "Expected New ack for resting sell"
+        # Resting sell: 100 @ $200 (GTC) — exactly enough for the FOK
+        s.send("D", {
+            "11": "ORD-FOK-FULL-SELL",
+            "21": "1",
+            "55": "AMZN",
+            "54": "2",
+            "40": "2",
+            "44": "200.00",
+            "38": "100",
+            "60": now,
+        })
+        ack_sell = s.recv()
+        assert ack_sell.get("150") == "0", "Expected New ack for resting sell"
 
-    # FOK buy: 100 @ $210 — full qty available, should fully fill, no Canceled
-    s.send("D", {
-        "11": "ORD-FOK-FULL-BUY",
-        "21": "1",
-        "55": "AMZN",
-        "54": "1",
-        "40": "2",
-        "44": "210.00",
-        "38": "100",
-        "59": "4",       # FOK
-        "60": now,
-    })
-    ack_fok = s.recv()
-    assert ack_fok.get("150") == "0", "Expected New ack for FOK buy"
+        # FOK buy: 100 @ $210 — full qty available, should fully fill, no Canceled
+        s.send("D", {
+            "11": "ORD-FOK-FULL-BUY",
+            "21": "1",
+            "55": "AMZN",
+            "54": "1",
+            "40": "2",
+            "44": "210.00",
+            "38": "100",
+            "59": "4",       # FOK
+            "60": now,
+        })
+        ack_fok = s.recv()
+        assert ack_fok.get("150") == "0", "Expected New ack for FOK buy"
 
-    fill_reports = []
-    cancel_reports = []
-    for _ in range(3):
-        try:
-            msg = s.recv()
-            if msg.get("35") != "8":
-                continue
-            if msg.get("150") == "4":
-                cancel_reports.append(msg)
-            else:
-                fill_reports.append(msg)
-        except socket.timeout:
-            break
+        fill_reports = []
+        cancel_reports = []
+        for _ in range(3):
+            try:
+                msg = s.recv()
+                if msg.get("35") != "8":
+                    continue
+                if msg.get("150") == "4":
+                    cancel_reports.append(msg)
+                else:
+                    fill_reports.append(msg)
+            except socket.timeout:
+                break
 
-    assert len(fill_reports) == 2, f"Expected 2 Fill ExecReports, got {len(fill_reports)}"
-    for r in fill_reports:
-        assert r.get("150") in ("1", "2"), f"Expected PartFill or Fill ExecType, got {r.get('150')}"
-    assert len(cancel_reports) == 0, f"Expected no Canceled for FOK full fill, got {len(cancel_reports)}"
+        assert len(fill_reports) == 2, f"Expected 2 Fill ExecReports, got {len(fill_reports)}"
+        for r in fill_reports:
+            assert r.get("150") in ("1", "2"), f"Expected PartFill or Fill ExecType, got {r.get('150')}"
+        assert len(cancel_reports) == 0, f"Expected no Canceled for FOK full fill, got {len(cancel_reports)}"
 
-    s.logout()
-    s.close()
-
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_order_status_on_reconnect():
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+        now = now_str()
 
-    # Place a resting limit buy on MSFT (MSFT book is empty at this point)
-    s.send("D", {
-        "11": "STATUS-BID",
-        "21": "1",
-        "55": "MSFT",
-        "54": "1",
-        "40": "2",
-        "44": "250.00",
-        "38": "75",
-        "60": now,
-    })
-    assert s.recv().get("150") == "0", "Expected New ack"
+        # Place a resting limit buy on MSFT (MSFT book is empty at this point)
+        s.send("D", {
+            "11": "STATUS-BID",
+            "21": "1",
+            "55": "MSFT",
+            "54": "1",
+            "40": "2",
+            "44": "250.00",
+            "38": "75",
+            "60": now,
+        })
+        assert s.recv().get("150") == "0", "Expected New ack"
 
-    s.logout()
-    s.close()
+        s.logout()
+        s.close()
 
-    # Reconnect — order statuses are buffered by logon() into s2.order_statuses
-    s2 = FixSession()
-    s2.connect()
-    s2.logon()
+        # Reconnect with same CompID — order statuses are buffered by logon()
+        s2 = FixSession(sender=comp_id)
+        s2.connect()
+        s2.logon()
 
-    clord_ids = {m.get("11") for m in s2.order_statuses}
-    assert "STATUS-BID" in clord_ids, \
-        f"Expected order status for STATUS-BID on reconnect, got: {clord_ids}"
+        clord_ids = {m.get("11") for m in s2.order_statuses}
+        assert "STATUS-BID" in clord_ids, \
+            f"Expected order status for STATUS-BID on reconnect, got: {clord_ids}"
 
-    status = next(m for m in s2.order_statuses if m.get("11") == "STATUS-BID")
-    assert status.get("150") == "I",   f"Expected ExecType=I, got {status.get('150')}"
-    assert status.get("39")  == "0",   f"Expected OrdStatus=New(0), got {status.get('39')}"
-    assert status.get("151") == "75",  f"Expected LeavesQty=75, got {status.get('151')}"
-    assert status.get("14")  == "0",   f"Expected CumQty=0, got {status.get('14')}"
+        status = next(m for m in s2.order_statuses if m.get("11") == "STATUS-BID")
+        assert status.get("150") == "I",   f"Expected ExecType=I, got {status.get('150')}"
+        assert status.get("39")  == "0",   f"Expected OrdStatus=New(0), got {status.get('39')}"
+        assert status.get("151") == "75",  f"Expected LeavesQty=75, got {status.get('151')}"
+        assert status.get("14")  == "0",   f"Expected CumQty=0, got {status.get('14')}"
 
-    s2.logout()
-    s2.close()
-
-
-
-def now_str():
-    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
+        s2.logout()
+        s2.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_udp_md_new_resting_order():
+    comp_id = claim_session()
     listener = UdpMdListener()
     listener.start()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    s = FixSession()
-    s.connect()
-    s.logon()
+        s.send("D", {
+            "11": "UDP-BID-1",
+            "21": "1",
+            "55": "AAPL",
+            "54": "1",
+            "40": "2",
+            "44": "99.00",
+            "38": "10",
+            "60": now_str(),
+        })
+        ack = recv_exec(s)
+        assert ack.get("150") == "0", "Expected New ack"
 
-    s.send("D", {
-        "11": "UDP-BID-1",
-        "21": "1",
-        "55": "AAPL",
-        "54": "1",
-        "40": "2",
-        "44": "99.00",
-        "38": "10",
-        "60": now_str(),
-    })
-    ack = recv_exec(s)
-    assert ack.get("150") == "0", "Expected New ack"
+        listener.wait_for(1, timeout=2.0)
+        listener.stop()
+        s.logout()
+        s.close()
 
-    listener.wait_for(1, timeout=2.0)
-    listener.stop()
-    s.logout()
-    s.close()
-
-    pkts = [p for p in listener.packets
-            if p["event_type"] == EVENT_NEW_ORDER and p["symbol"] == "AAPL"]
-    assert len(pkts) >= 1, f"Expected >= 1 NewOrder UDP packet for AAPL, got {listener.packets}"
-    pkt = pkts[0]
-    assert pkt["side"] == SIDE_BID, f"Expected SIDE_BID, got {pkt['side']}"
-    assert abs(pkt["price"] - 99.0) < 1e-9, f"Expected price 99.0, got {pkt['price']}"
-    assert pkt["qty"] == 10, f"Expected qty 10, got {pkt['qty']}"
+        pkts = [p for p in listener.packets
+                if p["event_type"] == EVENT_NEW_ORDER and p["symbol"] == "AAPL"]
+        assert len(pkts) >= 1, f"Expected >= 1 NewOrder UDP packet for AAPL, got {listener.packets}"
+        pkt = pkts[0]
+        assert pkt["side"] == SIDE_BID, f"Expected SIDE_BID, got {pkt['side']}"
+        assert abs(pkt["price"] - 99.0) < 1e-9, f"Expected price 99.0, got {pkt['price']}"
+        assert pkt["qty"] == 10, f"Expected qty 10, got {pkt['qty']}"
+    finally:
+        release_session(comp_id)
 
 
 def test_udp_md_cancel():
+    comp_id = claim_session()
     listener = UdpMdListener()
     listener.start()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
+        now = now_str()
 
-    s = FixSession()
-    s.connect()
-    s.logon()
-    now = now_str()
+        s.send("D", {
+            "11": "UDP-CXL-ORD",
+            "21": "1",
+            "55": "AAPL",
+            "54": "1",
+            "40": "2",
+            "44": "88.00",
+            "38": "5",
+            "60": now,
+        })
+        recv_exec(s)
 
-    s.send("D", {
-        "11": "UDP-CXL-ORD",
-        "21": "1",
-        "55": "AAPL",
-        "54": "1",
-        "40": "2",
-        "44": "88.00",
-        "38": "5",
-        "60": now,
-    })
-    recv_exec(s)
+        time.sleep(0.2)
 
-    time.sleep(0.2)
+        s.send("F", {
+            "41": "UDP-CXL-ORD",
+            "11": "UDP-CXL-ORD-CXL",
+            "55": "AAPL",
+            "54": "1",
+            "38": "5",
+            "60": now,
+        })
+        recv_exec(s)
 
-    s.send("F", {
-        "41": "UDP-CXL-ORD",
-        "11": "UDP-CXL-ORD-CXL",
-        "55": "AAPL",
-        "54": "1",
-        "38": "5",
-        "60": now,
-    })
-    recv_exec(s)
+        listener.wait_for(2, timeout=2.0)
+        listener.stop()
+        s.logout()
+        s.close()
 
-    listener.wait_for(2, timeout=2.0)
-    listener.stop()
-    s.logout()
-    s.close()
-
-    pkts = [p for p in listener.packets
-            if p["event_type"] == EVENT_CANCEL and p["symbol"] == "AAPL"]
-    assert len(pkts) >= 1, f"Expected >= 1 Cancel UDP packet for AAPL, got {listener.packets}"
-    assert pkts[0]["qty"] == 0, f"Expected qty=0 for cancel, got {pkts[0]['qty']}"
+        pkts = [p for p in listener.packets
+                if p["event_type"] == EVENT_CANCEL and p["symbol"] == "AAPL"]
+        assert len(pkts) >= 1, f"Expected >= 1 Cancel UDP packet for AAPL, got {listener.packets}"
+        assert pkts[0]["qty"] == 0, f"Expected qty=0 for cancel, got {pkts[0]['qty']}"
+    finally:
+        release_session(comp_id)
 
 
 def test_udp_md_fill():
+    comp_id = claim_session()
     listener = UdpMdListener()
     listener.start()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
+        now = now_str()
 
-    s = FixSession()
-    s.connect()
-    s.logon()
-    now = now_str()
+        s.send("D", {
+            "11": "UDP-FILL-BUY",
+            "21": "1",
+            "55": "GOOG",
+            "54": "1",
+            "40": "2",
+            "44": "500.00",
+            "38": "100",
+            "60": now,
+        })
+        recv_exec(s)
+        time.sleep(0.1)
 
-    s.send("D", {
-        "11": "UDP-FILL-BUY",
-        "21": "1",
-        "55": "GOOG",
-        "54": "1",
-        "40": "2",
-        "44": "500.00",
-        "38": "100",
-        "60": now,
-    })
-    recv_exec(s)
-    time.sleep(0.1)
+        s.send("D", {
+            "11": "UDP-FILL-SELL",
+            "21": "1",
+            "55": "GOOG",
+            "54": "2",
+            "40": "2",
+            "44": "500.00",
+            "38": "100",
+            "60": now,
+        })
+        recv_exec(s)
 
-    s.send("D", {
-        "11": "UDP-FILL-SELL",
-        "21": "1",
-        "55": "GOOG",
-        "54": "2",
-        "40": "2",
-        "44": "500.00",
-        "38": "100",
-        "60": now,
-    })
-    recv_exec(s)
+        listener.wait_for(3, timeout=2.0)
+        drain(s)
+        listener.stop()
+        s.logout()
+        s.close()
 
-    listener.wait_for(3, timeout=2.0)
-    drain(s)
-    listener.stop()
-    s.logout()
-    s.close()
-
-    pkts = [p for p in listener.packets if p["symbol"] == "GOOG"]
-    fill_rest = [p for p in pkts if p["event_type"] == EVENT_FILL_RESTING]
-    trades    = [p for p in pkts if p["event_type"] == EVENT_TRADE]
-    assert len(fill_rest) >= 1, f"Expected >= 1 FillResting packet, got {pkts}"
-    assert len(trades) >= 1,    f"Expected >= 1 Trade packet, got {pkts}"
-    assert trades[0]["side"] == SIDE_TRADE, f"Expected SIDE_TRADE, got {trades[0]['side']}"
-    assert abs(trades[0]["price"] - 500.0) < 1e-9, f"Expected price 500.0, got {trades[0]['price']}"
+        pkts = [p for p in listener.packets if p["symbol"] == "GOOG"]
+        fill_rest = [p for p in pkts if p["event_type"] == EVENT_FILL_RESTING]
+        trades    = [p for p in pkts if p["event_type"] == EVENT_TRADE]
+        assert len(fill_rest) >= 1, f"Expected >= 1 FillResting packet, got {pkts}"
+        assert len(trades) >= 1,    f"Expected >= 1 Trade packet, got {pkts}"
+        assert trades[0]["side"] == SIDE_TRADE, f"Expected SIDE_TRADE, got {trades[0]['side']}"
+        assert abs(trades[0]["price"] - 500.0) < 1e-9, f"Expected price 500.0, got {trades[0]['price']}"
+    finally:
+        release_session(comp_id)
 
 
 def test_replace_qty_reduction():
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    # Place a resting limit buy
-    s.send("D", {
-        "11": "RPL-QTY-ORIG",
-        "21": "1",
-        "55": "AAPL",
-        "54": "1",
-        "40": "2",
-        "44": "120.00",
-        "38": "100",
-        "60": now_str(),
-    })
-    ack = s.recv()
-    assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
+        # Place a resting limit buy
+        s.send("D", {
+            "11": "RPL-QTY-ORIG",
+            "21": "1",
+            "55": "AAPL",
+            "54": "1",
+            "40": "2",
+            "44": "120.00",
+            "38": "100",
+            "60": now_str(),
+        })
+        ack = s.recv()
+        assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
 
-    # Replace: same price, smaller qty (should preserve queue priority)
-    s.send("G", {
-        "11": "RPL-QTY-NEW",
-        "41": "RPL-QTY-ORIG",
-        "21": "1",
-        "55": "AAPL",
-        "54": "1",
-        "40": "2",
-        "44": "120.00",
-        "38": "60",
-        "60": now_str(),
-    })
-    resp = s.recv()
-    assert resp.get("35") == "8",   f"Expected ExecutionReport, got {resp.get('35')}"
-    assert resp.get("150") == "5",  f"Expected ExecType=Replaced(5), got {resp.get('150')}"
-    assert resp.get("11") == "RPL-QTY-NEW",  f"Expected new ClOrdID, got {resp.get('11')}"
-    assert resp.get("41") == "RPL-QTY-ORIG", f"Expected OrigClOrdID, got {resp.get('41')}"
-    assert resp.get("151") == "60", f"Expected LeavesQty=60, got {resp.get('151')}"
+        # Replace: same price, smaller qty (should preserve queue priority)
+        s.send("G", {
+            "11": "RPL-QTY-NEW",
+            "41": "RPL-QTY-ORIG",
+            "21": "1",
+            "55": "AAPL",
+            "54": "1",
+            "40": "2",
+            "44": "120.00",
+            "38": "60",
+            "60": now_str(),
+        })
+        resp = s.recv()
+        assert resp.get("35") == "8",   f"Expected ExecutionReport, got {resp.get('35')}"
+        assert resp.get("150") == "5",  f"Expected ExecType=Replaced(5), got {resp.get('150')}"
+        assert resp.get("11") == "RPL-QTY-NEW",  f"Expected new ClOrdID, got {resp.get('11')}"
+        assert resp.get("41") == "RPL-QTY-ORIG", f"Expected OrigClOrdID, got {resp.get('41')}"
+        assert resp.get("151") == "60", f"Expected LeavesQty=60, got {resp.get('151')}"
 
-    s.logout()
-    s.close()
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_replace_price_change():
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    # Place a resting limit sell
-    s.send("D", {
-        "11": "RPL-PX-ORIG",
-        "21": "1",
-        "55": "AAPL",
-        "54": "2",
-        "40": "2",
-        "44": "200.00",
-        "38": "50",
-        "60": now_str(),
-    })
-    ack = s.recv()
-    assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
+        # Place a resting limit sell
+        s.send("D", {
+            "11": "RPL-PX-ORIG",
+            "21": "1",
+            "55": "AAPL",
+            "54": "2",
+            "40": "2",
+            "44": "200.00",
+            "38": "50",
+            "60": now_str(),
+        })
+        ack = s.recv()
+        assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
 
-    # Replace: change price (loses queue priority, re-inserted at new level)
-    s.send("G", {
-        "11": "RPL-PX-NEW",
-        "41": "RPL-PX-ORIG",
-        "21": "1",
-        "55": "AAPL",
-        "54": "2",
-        "40": "2",
-        "44": "210.00",
-        "38": "50",
-        "60": now_str(),
-    })
-    resp = s.recv()
-    assert resp.get("35") == "8",  f"Expected ExecutionReport, got {resp.get('35')}"
-    assert resp.get("150") == "5", f"Expected ExecType=Replaced(5), got {resp.get('150')}"
-    assert resp.get("44") == "210", f"Expected Price=210, got {resp.get('44')}"
+        # Replace: change price (loses queue priority, re-inserted at new level)
+        s.send("G", {
+            "11": "RPL-PX-NEW",
+            "41": "RPL-PX-ORIG",
+            "21": "1",
+            "55": "AAPL",
+            "54": "2",
+            "40": "2",
+            "44": "210.00",
+            "38": "50",
+            "60": now_str(),
+        })
+        resp = s.recv()
+        assert resp.get("35") == "8",  f"Expected ExecutionReport, got {resp.get('35')}"
+        assert resp.get("150") == "5", f"Expected ExecType=Replaced(5), got {resp.get('150')}"
+        assert resp.get("44") == "210", f"Expected Price=210, got {resp.get('44')}"
 
-    s.logout()
-    s.close()
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_replace_unknown_order():
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    # Send replace for a ClOrdID that was never submitted
-    s.send("G", {
-        "11": "RPL-UNK-NEW",
-        "41": "RPL-UNK-GHOST",
-        "21": "1",
-        "55": "AAPL",
-        "54": "1",
-        "40": "2",
-        "44": "100.00",
-        "38": "10",
-        "60": now_str(),
-    })
-    resp = s.recv()
-    assert resp.get("35") == "9", f"Expected OrderCancelReject(9), got {resp.get('35')}"
+        # Send replace for a ClOrdID that was never submitted
+        s.send("G", {
+            "11": "RPL-UNK-NEW",
+            "41": "RPL-UNK-GHOST",
+            "21": "1",
+            "55": "AAPL",
+            "54": "1",
+            "40": "2",
+            "44": "100.00",
+            "38": "10",
+            "60": now_str(),
+        })
+        resp = s.recv()
+        assert resp.get("35") == "9", f"Expected OrderCancelReject(9), got {resp.get('35')}"
 
-    s.logout()
-    s.close()
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_replace_symbol_change_rejected():
-    s = FixSession()
-    s.connect()
-    s.logon()
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
 
-    # Place a resting order for AAPL
-    s.send("D", {
-        "11": "RPL-SYM-ORIG",
-        "21": "1",
-        "55": "AAPL",
-        "54": "1",
-        "40": "2",
-        "44": "130.00",
-        "38": "25",
-        "60": now_str(),
-    })
-    ack = s.recv()
-    assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
+        # Place a resting order for AAPL
+        s.send("D", {
+            "11": "RPL-SYM-ORIG",
+            "21": "1",
+            "55": "AAPL",
+            "54": "1",
+            "40": "2",
+            "44": "130.00",
+            "38": "25",
+            "60": now_str(),
+        })
+        ack = s.recv()
+        assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
 
-    # Try to replace changing the symbol — should be rejected
-    s.send("G", {
-        "11": "RPL-SYM-NEW",
-        "41": "RPL-SYM-ORIG",
-        "21": "1",
-        "55": "MSFT",           # different symbol
-        "54": "1",
-        "40": "2",
-        "44": "130.00",
-        "38": "25",
-        "60": now_str(),
-    })
-    resp = s.recv()
-    assert resp.get("35") == "9", f"Expected OrderCancelReject(9), got {resp.get('35')}"
+        # Try to replace changing the symbol — should be rejected
+        s.send("G", {
+            "11": "RPL-SYM-NEW",
+            "41": "RPL-SYM-ORIG",
+            "21": "1",
+            "55": "MSFT",           # different symbol
+            "54": "1",
+            "40": "2",
+            "44": "130.00",
+            "38": "25",
+            "60": now_str(),
+        })
+        resp = s.recv()
+        assert resp.get("35") == "9", f"Expected OrderCancelReject(9), got {resp.get('35')}"
 
-    s.logout()
-    s.close()
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
 
 
 def test_pool_session_multiclient():
-    c1 = admin_send("CLAIM-SESSION").split()[1]
-    c2 = admin_send("CLAIM-SESSION").split()[1]
+    c1 = claim_session()
+    c2 = claim_session()
     results = {}
     errors = {}
 
@@ -1014,7 +1089,7 @@ def test_pool_session_multiclient():
                 "40": "2",
                 "44": price,
                 "38": "1",
-                "60": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S"),
+                "60": now_str(),
             })
             msg = s.recv()
             results[comp_id] = msg.get("150")
@@ -1030,8 +1105,8 @@ def test_pool_session_multiclient():
     t1.join(timeout=10)
     t2.join(timeout=10)
 
-    admin_send(f"RELEASE-SESSION {c1}")
-    admin_send(f"RELEASE-SESSION {c2}")
+    release_session(c1)
+    release_session(c2)
 
     assert not errors, f"Client errors: {errors}"
     assert results.get(c1) == "0", f"{c1} expected ExecType=New(0), got {results.get(c1)}"
