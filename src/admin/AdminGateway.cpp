@@ -9,8 +9,11 @@
 
 namespace admin {
 
-AdminGateway::AdminGateway(engine::MatchingEngine& engine, int port)
-    : engine_(engine), port_(port) {}
+AdminGateway::AdminGateway(engine::MatchingEngine& engine, int port,
+                           std::vector<std::string> session_pool)
+    : engine_(engine), port_(port),
+      pool_(std::move(session_pool)),
+      available_(pool_.begin(), pool_.end()) {}
 
 AdminGateway::~AdminGateway() { stop(); }
 
@@ -79,7 +82,6 @@ void AdminGateway::handle_client(int fd) {
             std::string line = buf.substr(0, pos);
             buf.erase(0, pos + 1);
 
-            // Strip trailing carriage return
             if (!line.empty() && line.back() == '\r')
                 line.pop_back();
 
@@ -90,8 +92,27 @@ void AdminGateway::handle_client(int fd) {
                     response = "OK\n";
                 else
                     response = "ERROR: symbol already registered or invalid (alphanumeric, 1-8 chars)\n";
+            } else if (line == "CLAIM-SESSION") {
+                if (available_.empty()) {
+                    response = "ERROR: no sessions available\n";
+                } else {
+                    auto it = available_.begin();
+                    response = "OK " + *it + "\n";
+                    available_.erase(it);
+                }
+            } else if (line.rfind("RELEASE-SESSION ", 0) == 0) {
+                std::string comp_id = line.substr(16);
+                bool known = false;
+                for (const auto& id : pool_)
+                    if (id == comp_id) { known = true; break; }
+                if (!known)
+                    response = "ERROR: unknown session " + comp_id + "\n";
+                else {
+                    available_.insert(comp_id);
+                    response = "OK\n";
+                }
             } else if (line == "HELP") {
-                response = "Commands: REGISTER <SYMBOL>\n";
+                response = "Commands: REGISTER <SYMBOL> | CLAIM-SESSION | RELEASE-SESSION <ID>\n";
             } else {
                 response = "ERROR: unknown command\n";
             }

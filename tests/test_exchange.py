@@ -63,11 +63,11 @@ def _checksum(data: str) -> str:
     return f"{sum(data.encode('ascii')) % 256:03d}"
 
 
-def build_message(msg_type: str, seq: int, body_fields: dict) -> bytes:
+def build_message(msg_type: str, seq: int, body_fields: dict, sender: str = SENDER) -> bytes:
     sending_time = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
     header_body = (
         f"35={msg_type}{SEP}"
-        f"49={SENDER}{SEP}"
+        f"49={sender}{SEP}"
         f"56={TARGET}{SEP}"
         f"34={seq}{SEP}"
         f"52={sending_time}{SEP}"
@@ -91,7 +91,8 @@ def parse_fields(raw: bytes) -> dict:
 
 
 class FixSession:
-    def __init__(self):
+    def __init__(self, sender: str = SENDER):
+        self.sender = sender
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.settimeout(5)
         self.seq = 1
@@ -105,7 +106,7 @@ class FixSession:
         self.sock.close()
 
     def send(self, msg_type: str, body: dict) -> None:
-        msg = build_message(msg_type, self.seq, body)
+        msg = build_message(msg_type, self.seq, body, sender=self.sender)
         self.seq += 1
         self.sock.sendall(msg)
 
@@ -994,6 +995,49 @@ def test_replace_symbol_change_rejected():
     s.close()
 
 
+def test_pool_session_multiclient():
+    c1 = admin_send("CLAIM-SESSION").split()[1]
+    c2 = admin_send("CLAIM-SESSION").split()[1]
+    results = {}
+    errors = {}
+
+    def run_client(comp_id, symbol, price):
+        try:
+            s = FixSession(sender=comp_id)
+            s.connect()
+            s.logon()
+            s.send("D", {
+                "11": f"ORD-{comp_id}",
+                "21": "1",
+                "55": symbol,
+                "54": "1",
+                "40": "2",
+                "44": price,
+                "38": "1",
+                "60": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S"),
+            })
+            msg = s.recv()
+            results[comp_id] = msg.get("150")
+            s.logout()
+            s.close()
+        except Exception as e:
+            errors[comp_id] = str(e)
+
+    t1 = threading.Thread(target=run_client, args=(c1, "AAPL", "150.00"))
+    t2 = threading.Thread(target=run_client, args=(c2, "MSFT", "300.00"))
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    admin_send(f"RELEASE-SESSION {c1}")
+    admin_send(f"RELEASE-SESSION {c2}")
+
+    assert not errors, f"Client errors: {errors}"
+    assert results.get(c1) == "0", f"{c1} expected ExecType=New(0), got {results.get(c1)}"
+    assert results.get(c2) == "0", f"{c2} expected ExecType=New(0), got {results.get(c2)}"
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -1020,6 +1064,7 @@ def main():
     run("OrderCancelReplaceRequest → price change", test_replace_price_change)
     run("OrderCancelReplaceRequest → unknown order → OrderCancelReject", test_replace_unknown_order)
     run("OrderCancelReplaceRequest → symbol change → OrderCancelReject", test_replace_symbol_change_rejected)
+    run("Pool sessions → two concurrent FIX clients", test_pool_session_multiclient)
 
     print()
     if failures:

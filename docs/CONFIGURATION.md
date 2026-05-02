@@ -39,21 +39,9 @@ Each `[SESSION]` block represents one client connection the exchange will accept
 
 ### Multiple clients
 
-To accept more than one client simultaneously, add additional `[SESSION]` blocks with different `TargetCompID` values (they can share the same port):
+The recommended way to support multiple simultaneous FIX clients is the session pool (`SessionPool` in `[EXCHANGE]`). At startup the exchange pre-allocates `N` anonymous session slots (`S1`–`SN`) and exposes `CLAIM-SESSION` / `RELEASE-SESSION` on the admin gateway so clients discover their `SenderCompID` at runtime.
 
-```ini
-[SESSION]
-SenderCompID=EXCHANGE
-TargetCompID=CLIENT_A
-SocketAcceptPort=5001
-
-[SESSION]
-SenderCompID=EXCHANGE
-TargetCompID=CLIENT_B
-SocketAcceptPort=5001
-```
-
-Each client must use its own `SenderCompID` when connecting.
+Additional `[SESSION]` blocks with fixed `TargetCompID` values can still be added manually for static clients that use a known CompID.
 
 ---
 
@@ -67,20 +55,11 @@ The `[EXCHANGE]` section is not a standard QuickFIX section — it is parsed man
 | `AdminPort` | `5002` | `5002` | TCP port for the plain-text admin gateway. |
 | `MulticastGroup` | `239.1.1.1` | `239.1.1.1` | IPv4 multicast group address for the UDP market data feed. Must be in the locally-scoped range `239.0.0.0/8`. |
 | `MulticastPort` | `5003` | `5003` | UDP port subscribers bind to when joining the multicast group. |
+| `SessionPool` | `8` | `0` | Number of additional FIX session slots to pre-allocate at startup (named `S1`–`SN`). Clients claim a slot via `CLAIM-SESSION` on the admin gateway before connecting. `0` disables the pool. |
 
 ### Admin gateway
 
-The admin gateway listens on `AdminPort` and accepts plain-text commands over TCP. Each command is a single line terminated by `\n`; the exchange replies with a single line.
-
-| Command | Response | Description |
-|---------|----------|-------------|
-| `REGISTER <symbol>` | `OK` or `ERROR: ...` | Register a new trading symbol at runtime. Symbols must be 1–8 alphanumeric characters and must not already exist. |
-
-Example using netcat:
-
-```bash
-echo "REGISTER TSLA" | nc 127.0.0.1 5002
-```
+The admin gateway listens on `AdminPort` and accepts plain-text commands over TCP. Each command is a single line terminated by `\n`; the exchange replies with a single line. See [docs/MESSAGES.md](MESSAGES.md) for the full admin command reference.
 
 ---
 
@@ -128,4 +107,5 @@ Symbols=AAPL,MSFT,GOOG,AMZN
 AdminPort=5002
 MulticastGroup=239.1.1.1
 MulticastPort=5003
+SessionPool=8
 ```

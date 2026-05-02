@@ -94,12 +94,23 @@ int main(int argc, char* argv[]) {
         gateway::FixGateway gateway(engine, publisher);
         gw_ptr = &gateway;
 
-        admin::AdminGateway admin_gw(engine, admin_port);
-
         FIX::SessionSettings settings(argv[1]);
+
+        std::string pool_str = read_exchange_value(config_path, "SessionPool");
+        int pool_size = pool_str.empty() ? 0 : std::stoi(pool_str);
+        std::vector<std::string> pool_ids;
+        for (int i = 1; i <= pool_size; ++i) {
+            std::string comp_id = "S" + std::to_string(i);
+            pool_ids.push_back(comp_id);
+            FIX::SessionID id("FIX.4.2", "EXCHANGE", comp_id);
+            settings.set(id, settings.get());
+        }
+
         FIX::FileStoreFactory store(settings);
         FIX::FileLogFactory   log(settings);
         FIX::SocketAcceptor   acceptor(gateway, store, settings, log);
+
+        admin::AdminGateway admin_gw(engine, admin_port, pool_ids);
 
         engine.start();
         admin_gw.start();
