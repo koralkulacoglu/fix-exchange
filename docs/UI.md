@@ -1,6 +1,6 @@
 # Trading UI
 
-A browser-based trading interface that bridges the exchange over WebSocket. Each browser tab gets an independent FIX session, shares a live order book fed from the UDP multicast stream, and can place and cancel orders in real time.
+A browser-based trading interface. Each server process claims one FIX session and serves the UI on a port. Place and cancel limit orders, watch the live order book and price chart, and monitor fills in the blotter.
 
 ---
 
@@ -38,8 +38,6 @@ python3 ui/main.py              # claims S1, serves http://localhost:8080
 python3 ui/main.py --port 8081  # claims S2, serves http://localhost:8081
 ```
 
-Open the respective URL in a browser.
-
 ---
 
 ## Architecture
@@ -51,43 +49,16 @@ Browser  ←→  WebSocket (/ws)  ←→  AsyncFixSession (per server)  ←→  
             asyncio UDP datagram endpoint  ←→  multicast 239.1.1.1:5003
 ```
 
-- **One FIX session per server process.** On startup the backend calls `CLAIM-SESSION` on the admin gateway to obtain a pool slot (e.g. `S1`), connects to the exchange, and holds that session for its entire lifetime. The session is released on shutdown. All WebSocket connections to the same server share this session.
+- **One FIX session per server process.** On startup the backend calls `CLAIM-SESSION` on the admin gateway to obtain a pool slot (e.g. `S1`), connects to the exchange, and holds that session for its entire lifetime. The session is released on shutdown.
 - **Single shared UDP listener.** One asyncio datagram endpoint joins the multicast group and fans out parsed `MdPacket` events to all connected clients. The order book is maintained in memory on the backend and snapshotted to new clients on connect.
 - **Exec log.** All execution reports received from the exchange are accumulated in memory. New WebSocket connections replay the full log so the blotter survives page reloads.
 - **No external FIX library.** Hand-rolled framing adapted from `tests/test_exchange.py`.
 
 ---
 
-## UI layout
-
-```
-┌──────────────────────────────────────────────────┐
-│  fix-exchange  [AAPL] [MSFT] [GOOG] [AMZN]   ●  │
-├──────────────────┬───────────────────────────────┤
-│  ORDER BOOK      │  ORDER ENTRY                  │
-│  151.00    50    │  Qty: ____   Price: ____       │
-│  150.50   200    │  [  Buy  ]  [  Sell  ]        │
-│  ─ spread 0.25 ─ │                               │
-│  150.25   100    │  BLOTTER                      │
-│  149.75   300    │  #  Sym  Side  Qty  Px  Status │
-│                  │  1  AAPL BUY  100  150  New   │
-├──────────────────┴───────────────────────────────┤
-│  TRADES  AAPL 150.25 ×50  MSFT 300.00 ×100       │
-└──────────────────────────────────────────────────┘
-```
-
-- **Symbol tabs** — switch between symbols; the order book updates live.
-- **Order book** — top 10 bids (green) and asks (red) with proportional depth bars. Spread shown between sides.
-- **Order entry** — enter qty and price, click Buy or Sell. Orders appear in the blotter immediately on ack.
-- **Blotter** — all orders submitted in this session with current status. Click `×` to cancel a resting order.
-- **Trade tape** — last 12 trades across all symbols, updated in real time from market data.
-- **Status dot** — green when the WebSocket is connected, red otherwise. Reconnects automatically.
-
----
-
 ## WebSocket protocol
 
-All messages are JSON. The browser connects to `ws://<host>:8080/ws`.
+All messages are JSON. The browser connects to `ws://<host>:<port>/ws`.
 
 ### Backend → browser
 

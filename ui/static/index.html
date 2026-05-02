@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>fix-exchange</title>
+  <script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -49,7 +50,7 @@
     main {
       flex: 1;
       display: grid;
-      grid-template-columns: 260px 1fr;
+      grid-template-columns: 260px 1fr 300px;
       overflow: hidden;
     }
     #book-panel {
@@ -82,6 +83,21 @@
       border-top: 1px solid #21262d;
       border-bottom: 1px solid #21262d;
     }
+    #chart-panel {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid #30363d;
+      overflow: hidden;
+    }
+    #chart-panel .panel-label {
+      font-size: 10px;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding: 12px 12px 8px;
+      flex-shrink: 0;
+    }
+    #chart { flex: 1; }
     #right-panel {
       padding: 12px;
       overflow-y: auto;
@@ -189,6 +205,11 @@
     </table>
   </div>
 
+  <div id="chart-panel">
+    <div class="panel-label">Price — <span id="chart-sym"></span></div>
+    <div id="chart"></div>
+  </div>
+
   <div id="right-panel">
     <div>
       <div class="section-title">Order Entry</div>
@@ -232,9 +253,13 @@
   let activeSym  = null;
   let book       = {};   // sym -> {bids: Map<price,qty>, asks: Map<price,qty>}
   let bookOrders = {};   // exchange_id -> {price, qty, side, symbol}  (for level aggregation)
-  let orders     = new Map();  // clord_id -> order object  (blotter)
-  let trades     = [];
-  let orderSeq   = 0;
+  let orders       = new Map();  // clord_id -> order object  (blotter)
+  let trades       = [];
+  let orderSeq     = 0;
+  let tradeHistory = {};  // symbol -> [{time, value}]
+  let lastTradeTime = {};  // symbol -> last unix second used (monotonic guarantee)
+  let chart = null;
+  let lineSeries = null;
 
   // ---------------------------------------------------------------------------
   // WebSocket lifecycle
@@ -280,6 +305,7 @@
     if (!activeSym && symbols.length) activeSym = symbols[0];
     renderTabs();
     renderBook();
+    renderChart();
   }
 
   function setLevel(lvls, price, qty) {
@@ -326,6 +352,10 @@
       trades.unshift({ symbol, price, qty });
       if (trades.length > 30) trades.pop();
       renderTape();
+      if (!tradeHistory[symbol]) tradeHistory[symbol] = [];
+      const point = { time: nextTradeTime(symbol), value: price };
+      tradeHistory[symbol].push(point);
+      if (symbol === activeSym) lineSeries.update(point);
     }
 
     if (symbol === activeSym) renderBook();
@@ -378,7 +408,7 @@
       const btn = document.createElement('button');
       btn.className = 'tab' + (sym === activeSym ? ' active' : '');
       btn.textContent = sym;
-      btn.onclick = () => { activeSym = sym; renderTabs(); renderBook(); };
+      btn.onclick = () => { activeSym = sym; renderTabs(); renderBook(); renderChart(); };
       el.appendChild(btn);
     }
   }
@@ -449,6 +479,38 @@
     }).join('');
   }
 
+  function nextTradeTime(symbol) {
+    const t = Math.floor(Date.now() / 1000);
+    const last = lastTradeTime[symbol] || 0;
+    const next = Math.max(t, last + 1);
+    lastTradeTime[symbol] = next;
+    return next;
+  }
+
+  function renderChart() {
+    document.getElementById('chart-sym').textContent = activeSym || '';
+    if (!activeSym || !tradeHistory[activeSym]) { lineSeries.setData([]); return; }
+    lineSeries.setData(tradeHistory[activeSym]);
+    chart.timeScale().scrollToRealTime();
+  }
+
+  function setupChart() {
+    chart = LightweightCharts.createChart(document.getElementById('chart'), {
+      layout: { background: { color: '#0d1117' }, textColor: '#e6edf3' },
+      grid:   { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      rightPriceScale: { borderColor: '#30363d' },
+      timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      handleScroll: true,
+      handleScale: true,
+    });
+    lineSeries = chart.addLineSeries({ color: '#58a6ff', lineWidth: 2 });
+    new ResizeObserver(() => {
+      const el = document.getElementById('chart');
+      chart.resize(el.clientWidth, el.clientHeight);
+    }).observe(document.getElementById('chart'));
+  }
+
   function renderTape() {
     document.getElementById('tape').innerHTML = trades.slice(0, 12).map(t =>
       `<span class="trade">
@@ -497,6 +559,7 @@
   // ---------------------------------------------------------------------------
   // Boot
   // ---------------------------------------------------------------------------
+  setupChart();
   setDot(false);
   connect();
 </script>

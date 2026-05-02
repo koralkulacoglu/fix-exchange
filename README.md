@@ -2,6 +2,8 @@
 
 A single-process equity exchange written in C++. Clients connect over TCP using the FIX 4.2 protocol to submit orders and receive execution reports. Market data is broadcast over UDP multicast as binary packets. A price-time priority matching engine runs on a dedicated thread.
 
+![Trading UI](docs/screenshots/ui.png)
+
 ---
 
 ## Architecture
