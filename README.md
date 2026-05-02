@@ -96,6 +96,20 @@ rm -rf store/
 
 ---
 
+## Trading UI
+
+A browser-based interface for placing orders and watching the live order book. See [docs/UI.md](docs/UI.md) for full details.
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+python3 ui/main.py        # → http://localhost:8080
+```
+
+Each server process claims one FIX session from the pool. Run two instances on different ports to get two independent clients that can trade against each other.
+
+---
+
 ## Testing
 
 The test suite manages the exchange process itself — no manual server start required:
@@ -120,10 +134,6 @@ BeginString=FIX.4.2
 DataDictionary=spec/FIX42.xml
 FileStorePath=store
 FileLogPath=log
-
-[SESSION]
-SenderCompID=EXCHANGE
-TargetCompID=CLIENT
 SocketAcceptPort=5001
 
 [EXCHANGE]
@@ -131,5 +141,6 @@ Symbols=AAPL,MSFT,GOOG,AMZN
 AdminPort=5002
 MulticastGroup=239.1.1.1
 MulticastPort=5003
+SessionPool=8
 ```
 

@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>fix-exchange</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 14px; color: #58a6ff; font-weight: bold; }
+    #tabs { display: flex; gap: 4px; }
+    .tab {
+      padding: 4px 12px;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      cursor: pointer;
+      background: transparent;
+      color: #8b949e;
+      font-family: inherit;
+      font-size: 12px;
+    }
+    .tab.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+    #ws-dot {
+      margin-left: auto;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #f85149;
+      flex-shrink: 0;
+    }
+    #ws-dot.up { background: #2ea043; }
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      overflow: hidden;
+    }
+    #book-panel {
+      border-right: 1px solid #30363d;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #book-panel h2, #right-panel .section-title {
+      font-size: 10px;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+    .book-table { width: 100%; border-collapse: collapse; }
+    .book-table td { padding: 2px 4px; }
+    .price-col { text-align: right; width: 80px; font-weight: bold; }
+    .qty-col { text-align: right; width: 60px; color: #8b949e; }
+    .bar-col { width: 80px; padding: 2px 8px; }
+    .bar { height: 10px; border-radius: 2px; min-width: 2px; }
+    .ask-price { color: #f85149; }
+    .bid-price { color: #2ea043; }
+    .spread-row td {
+      text-align: center;
+      color: #484f58;
+      font-size: 10px;
+      padding: 6px 4px;
+      border-top: 1px solid #21262d;
+      border-bottom: 1px solid #21262d;
+    }
+    #right-panel {
+      padding: 12px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .order-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .order-grid input {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      color: #c9d1d9;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 6px 8px;
+      width: 100%;
+    }
+    .order-grid input:focus { outline: none; border-color: #1f6feb; }
+    .order-grid input::placeholder { color: #484f58; }
+    .btn-row { display: flex; gap: 8px; grid-column: 1 / -1; }
+    .btn {
+      flex: 1;
+      padding: 8px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: bold;
+    }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-buy  { background: #2ea043; color: #fff; }
+    .btn-buy:hover:not(:disabled)  { background: #3fb950; }
+    .btn-sell { background: #f85149; color: #fff; }
+    .btn-sell:hover:not(:disabled) { background: #ff6b6b; }
+    .btn-sm {
+      background: #21262d;
+      color: #8b949e;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 11px;
+      padding: 2px 7px;
+    }
+    .btn-sm:hover { background: #30363d; color: #c9d1d9; }
+    #err { color: #f85149; font-size: 11px; grid-column: 1 / -1; min-height: 14px; }
+    .data-table { width: 100%; border-collapse: collapse; }
+    .data-table th {
+      text-align: left;
+      padding: 3px 6px;
+      color: #8b949e;
+      font-weight: normal;
+      font-size: 10px;
+      text-transform: uppercase;
+      border-bottom: 1px solid #21262d;
+    }
+    .data-table td { padding: 4px 6px; border-bottom: 1px solid #161b22; }
+    .st-new     { color: #58a6ff; }
+    .st-partial { color: #e3b341; }
+    .st-filled  { color: #2ea043; }
+    .st-canceled { color: #484f58; }
+    .st-rejected { color: #f85149; }
+    footer {
+      background: #161b22;
+      border-top: 1px solid #30363d;
+      padding: 0 16px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+    footer .label { font-size: 10px; color: #484f58; text-transform: uppercase; letter-spacing: 1px; }
+    #tape { display: flex; gap: 20px; overflow: hidden; }
+    .trade { font-size: 11px; }
+    .trade .t-sym { color: #58a6ff; }
+    .trade .t-px  { color: #e3b341; }
+    .trade .t-qty { color: #8b949e; }
+    .side-buy  { color: #2ea043; }
+    .side-sell { color: #f85149; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>fix-exchange</h1>
+  <div id="tabs"></div>
+  <div id="ws-dot" title="Disconnected"></div>
+</header>
+
+<main>
+  <div id="book-panel">
+    <h2>Order Book — <span id="book-sym">—</span></h2>
+    <table class="book-table">
+      <tbody id="book-body">
+        <tr><td colspan="3" style="color:#484f58;text-align:center;padding:24px">Connecting…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div id="right-panel">
+    <div>
+      <div class="section-title">Order Entry</div>
+      <div class="order-grid">
+        <input id="qty-in"   type="number" placeholder="Qty"   min="1"    step="1"    required>
+        <input id="price-in" type="number" placeholder="Price" min="0.01" step="0.01" required>
+        <div id="err"></div>
+        <div class="btn-row">
+          <button class="btn btn-buy"  id="btn-buy"  onclick="submitOrder('buy')" >Buy</button>
+          <button class="btn btn-sell" id="btn-sell" onclick="submitOrder('sell')">Sell</button>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-title">Blotter</div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>#</th><th>Symbol</th><th>Side</th><th>Qty</th>
+            <th>Price</th><th>Status</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="blotter"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <span class="label">Trades</span>
+  <div id="tape"></div>
+</footer>
+
+<script>
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
+  let ws = null;
+  let symbols    = [];
+  let activeSym  = null;
+  let book       = {};   // sym -> {bids: Map<price,qty>, asks: Map<price,qty>}
+  let bookOrders = {};   // exchange_id -> {price, qty, side, symbol}  (for level aggregation)
+  let orders     = new Map();  // clord_id -> order object  (blotter)
+  let trades     = [];
+  let orderSeq   = 0;
+
+  // ---------------------------------------------------------------------------
+  // WebSocket lifecycle
+  // ---------------------------------------------------------------------------
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+    ws.onopen = () => setDot(true);
+    ws.onclose = () => { setDot(false); setTimeout(connect, 2000); };
+    ws.onerror = () => ws.close();
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if      (msg.type === 'snapshot') onSnapshot(msg);
+      else if (msg.type === 'md')       onMd(msg);
+      else if (msg.type === 'exec')     onExec(msg);
+    };
+  }
+
+  function setDot(up) {
+    const el = document.getElementById('ws-dot');
+    el.className = up ? 'up' : '';
+    el.title = up ? 'Connected' : 'Disconnected';
+    document.getElementById('btn-buy').disabled  = !up;
+    document.getElementById('btn-sell').disabled = !up;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Message handlers
+  // ---------------------------------------------------------------------------
+  function onSnapshot(msg) {
+    symbols = msg.symbols;
+    for (const [sym, sides] of Object.entries(msg.book)) {
+      book[sym] = {
+        bids: new Map(sides.bids.map(([p, q]) => [p, q])),
+        asks: new Map(sides.asks.map(([p, q]) => [p, q])),
+      };
+    }
+    bookOrders = {};
+    for (const o of (msg.orders || [])) {
+      bookOrders[o.eid] = { price: o.price, qty: o.qty };
+    }
+    if (!activeSym && symbols.length) activeSym = symbols[0];
+    renderTabs();
+    renderBook();
+  }
+
+  function setLevel(lvls, price, qty) {
+    if (qty <= 0) lvls.delete(price);
+    else lvls.set(price, qty);
+  }
+
+  function onMd(msg) {
+    const { evt, side, symbol, price, qty, eid } = msg;
+    if (!book[symbol]) book[symbol] = { bids: new Map(), asks: new Map() };
+    const isBid   = side === 48;  // ord('0')
+    const isAsk   = side === 49;  // ord('1')
+    const isTrade = side === 50;  // ord('2')
+    const lvls    = isBid ? book[symbol].bids : (isAsk ? book[symbol].asks : null);
+
+    if (lvls && eid) {
+      if (evt === 0) {  // NewOrder
+        bookOrders[eid] = { price, qty };
+        setLevel(lvls, price, (lvls.get(price) || 0) + qty);
+      } else if (evt === 1) {  // Cancel
+        const prev = bookOrders[eid];
+        if (prev) { delete bookOrders[eid]; setLevel(lvls, prev.price, (lvls.get(prev.price) || 0) - prev.qty); }
+      } else if (evt === 2) {  // FillResting
+        const prev = bookOrders[eid];
+        if (prev) {
+          const filled = prev.qty - qty;
+          setLevel(lvls, prev.price, (lvls.get(prev.price) || 0) - filled);
+          if (qty === 0) delete bookOrders[eid];
+          else bookOrders[eid].qty = qty;
+        }
+      } else if (evt === 4) {  // ReplaceInPlace
+        const prev = bookOrders[eid];
+        if (prev) { setLevel(lvls, prev.price, (lvls.get(prev.price) || 0) - (prev.qty - qty)); bookOrders[eid].qty = qty; }
+      } else if (evt === 5) {  // ReplaceDelete
+        const prev = bookOrders[eid];
+        if (prev) { delete bookOrders[eid]; setLevel(lvls, prev.price, (lvls.get(prev.price) || 0) - prev.qty); }
+      } else if (evt === 6) {  // ReplaceNew
+        bookOrders[eid] = { price, qty };
+        setLevel(lvls, price, (lvls.get(price) || 0) + qty);
+      }
+    }
+
+    if (isTrade) {
+      trades.unshift({ symbol, price, qty });
+      if (trades.length > 30) trades.pop();
+      renderTape();
+    }
+
+    if (symbol === activeSym) renderBook();
+  }
+
+  function onExec(msg) {
+    const clordId  = msg['11'];
+    const execType = msg['150'];
+    const symbol   = msg['55'];
+    const side     = msg['54'] === '1' ? 'buy' : 'sell';
+    const qty      = parseInt(msg['38'] || 0);
+    const price    = parseFloat(msg['44'] || 0);
+    const leavesQty = parseInt(msg['151'] || 0);
+
+    if (execType === 'I') return;  // order status replay from previous session — ignore
+
+    const statusMap = {
+      '0': ['New',      'st-new'],
+      '1': ['Partial',  'st-partial'],
+      '2': ['Filled',   'st-filled'],
+      '4': ['Canceled', 'st-canceled'],
+      '5': ['Replaced', 'st-new'],
+      '8': ['Rejected', 'st-rejected'],
+    };
+    const [statusText, statusClass] = statusMap[execType] || [execType, ''];
+    const active = !['2', '4', '8'].includes(execType);
+
+    if (execType === '0') {
+      orderSeq++;
+      orders.set(clordId, { n: orderSeq, symbol, side, qty, price, leavesQty, statusText, statusClass, active });
+    } else if (orders.has(clordId)) {
+      const o = orders.get(clordId);
+      Object.assign(o, { statusText, statusClass, active, leavesQty });
+    }
+
+    if (execType === '8') {
+      showErr(msg['58'] || 'Order rejected');
+    }
+
+    renderBlotter();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+  function renderTabs() {
+    const el = document.getElementById('tabs');
+    el.innerHTML = '';
+    for (const sym of symbols) {
+      const btn = document.createElement('button');
+      btn.className = 'tab' + (sym === activeSym ? ' active' : '');
+      btn.textContent = sym;
+      btn.onclick = () => { activeSym = sym; renderTabs(); renderBook(); };
+      el.appendChild(btn);
+    }
+  }
+
+  function renderBook() {
+    document.getElementById('book-sym').textContent = activeSym || '—';
+    const tbody = document.getElementById('book-body');
+    if (!activeSym || !book[activeSym]) {
+      tbody.innerHTML = '<tr><td colspan="3" style="color:#484f58;text-align:center;padding:24px">No data</td></tr>';
+      return;
+    }
+
+    const { bids, asks } = book[activeSym];
+    const sortedBids = [...bids.entries()].sort((a, b) => b[0] - a[0]).slice(0, 10);
+    const sortedAsks = [...asks.entries()].sort((a, b) => a[0] - b[0]).slice(0, 10);
+    const displayAsks = [...sortedAsks].reverse(); // worst ask at top
+
+    const maxQty = Math.max(1, ...sortedBids.map(x => x[1]), ...sortedAsks.map(x => x[1]));
+
+    let html = '';
+
+    for (const [p, q] of displayAsks) {
+      const w = Math.round((q / maxQty) * 76);
+      html += `<tr>
+        <td class="price-col ask-price">${p.toFixed(2)}</td>
+        <td class="qty-col">${q}</td>
+        <td class="bar-col"><div class="bar" style="width:${w}px;background:#5a1e1e"></div></td>
+      </tr>`;
+    }
+
+    const bestBid = sortedBids[0]?.[0];
+    const bestAsk = sortedAsks[0]?.[0];
+    const spread = (bestBid && bestAsk) ? (bestAsk - bestBid).toFixed(2) : '—';
+    html += `<tr class="spread-row"><td colspan="3">spread ${spread}</td></tr>`;
+
+    for (const [p, q] of sortedBids) {
+      const w = Math.round((q / maxQty) * 76);
+      html += `<tr>
+        <td class="price-col bid-price">${p.toFixed(2)}</td>
+        <td class="qty-col">${q}</td>
+        <td class="bar-col"><div class="bar" style="width:${w}px;background:#1a3a22"></div></td>
+      </tr>`;
+    }
+
+    tbody.innerHTML = html;
+  }
+
+  function renderBlotter() {
+    const tbody = document.getElementById('blotter');
+    const rows  = [...orders.entries()].sort((a, b) => b[1].n - a[1].n);
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="color:#484f58;padding:8px">No orders</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(([clordId, o]) => {
+      const cancel = o.active
+        ? `<button class="btn-sm" onclick="cancelOrder('${clordId}')">×</button>`
+        : '';
+      return `<tr>
+        <td style="color:#484f58">${o.n}</td>
+        <td>${o.symbol}</td>
+        <td class="${o.side === 'buy' ? 'side-buy' : 'side-sell'}">${o.side.toUpperCase()}</td>
+        <td>${o.qty}</td>
+        <td>${o.price.toFixed(2)}</td>
+        <td class="${o.statusClass}">${o.statusText}</td>
+        <td>${cancel}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderTape() {
+    document.getElementById('tape').innerHTML = trades.slice(0, 12).map(t =>
+      `<span class="trade">
+        <span class="t-sym">${t.symbol}</span>
+        <span class="t-px">${t.price.toFixed(2)}</span>
+        <span class="t-qty">×${t.qty}</span>
+      </span>`
+    ).join('');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Order actions
+  // ---------------------------------------------------------------------------
+  function submitOrder(side) {
+    const qty   = parseInt(document.getElementById('qty-in').value);
+    const price = parseFloat(document.getElementById('price-in').value);
+    if (!activeSym)         return showErr('Select a symbol');
+    if (!qty || qty <= 0)   return showErr('Invalid qty');
+    if (!price || price <= 0) return showErr('Invalid price');
+    if (!ws || ws.readyState !== WebSocket.OPEN) return showErr('Not connected');
+    clearErr();
+    ws.send(JSON.stringify({ type: 'new_order', symbol: activeSym, side, qty, price }));
+  }
+
+  function cancelOrder(clordId) {
+    const o = orders.get(clordId);
+    if (!o || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+      type: 'cancel',
+      orig_clord_id: clordId,
+      symbol: o.symbol,
+      side: o.side,
+      qty: o.qty,
+    }));
+  }
+
+  function showErr(msg) {
+    const el = document.getElementById('err');
+    el.textContent = msg;
+    clearTimeout(el._t);
+    el._t = setTimeout(clearErr, 4000);
+  }
+
+  function clearErr() { document.getElementById('err').textContent = ''; }
+
+  // ---------------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------------
+  setDot(false);
+  connect();
+</script>
+</body>
+</html>
