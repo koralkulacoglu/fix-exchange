@@ -33,6 +33,12 @@ bool MatchingEngine::registerSymbol(const std::string& symbol) {
     return true;
 }
 
+void MatchingEngine::restoreOrder(const Order& order) {
+    auto it = books_.find(order.symbol);
+    if (it != books_.end())
+        it->second.restore(order);
+}
+
 bool MatchingEngine::isValidSymbol(const std::string& symbol) const {
     std::lock_guard<std::mutex> lock(symbols_mutex_);
     return valid_symbols_.count(symbol) > 0;

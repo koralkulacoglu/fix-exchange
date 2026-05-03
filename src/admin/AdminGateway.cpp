@@ -10,8 +10,9 @@
 namespace admin {
 
 AdminGateway::AdminGateway(engine::MatchingEngine& engine, int port,
-                           std::vector<std::string> session_pool)
-    : engine_(engine), port_(port),
+                           std::vector<std::string> session_pool,
+                           persistence::PersistenceLayer* persistence)
+    : engine_(engine), persistence_(persistence), port_(port),
       pool_(std::move(session_pool)),
       available_(pool_.begin(), pool_.end()) {}
 
@@ -88,10 +89,17 @@ void AdminGateway::handle_client(int fd) {
             std::string response;
             if (line.rfind("REGISTER ", 0) == 0) {
                 std::string sym = line.substr(9);
-                if (engine_.registerSymbol(sym))
+                if (engine_.registerSymbol(sym)) {
                     response = "OK\n";
-                else
+                    if (persistence_) {
+                        persistence::PersistenceEvent evt;
+                        evt.type    = persistence::PersistenceEvent::SYMBOL;
+                        evt.str_val = sym;
+                        persistence_->push(std::move(evt));
+                    }
+                } else {
                     response = "ERROR: symbol already registered or invalid (alphanumeric, 1-8 chars)\n";
+                }
             } else if (line == "CLAIM-SESSION") {
                 if (available_.empty()) {
                     response = "ERROR: no sessions available\n";

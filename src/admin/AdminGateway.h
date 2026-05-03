@@ -1,5 +1,6 @@
 #pragma once
 #include "engine/MatchingEngine.h"
+#include "persistence/PersistenceLayer.h"
 #include <atomic>
 #include <set>
 #include <string>
@@ -11,7 +12,8 @@ namespace admin {
 class AdminGateway {
 public:
     AdminGateway(engine::MatchingEngine& engine, int port,
-                 std::vector<std::string> session_pool = {});
+                 std::vector<std::string> session_pool = {},
+                 persistence::PersistenceLayer* persistence = nullptr);
     ~AdminGateway();
 
     void start();
@@ -21,7 +23,8 @@ private:
     void run();
     void handle_client(int fd);
 
-    engine::MatchingEngine& engine_;
+    engine::MatchingEngine&         engine_;
+    persistence::PersistenceLayer*  persistence_;
     int port_;
     int listen_fd_{-1};
     std::atomic<bool> stop_{false};

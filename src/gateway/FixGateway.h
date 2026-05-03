@@ -1,6 +1,7 @@
 #pragma once
 #include "engine/MatchingEngine.h"
 #include "engine/Order.h"
+#include "persistence/PersistenceLayer.h"
 #include <quickfix/Application.h>
 #include <quickfix/MessageCracker.h>
 #include <quickfix/Session.h>
@@ -11,6 +12,7 @@
 #include <quickfix/fix42/OrderCancelRequest.h>
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 namespace market_data { class MarketDataPublisher; }
 
@@ -19,7 +21,12 @@ namespace gateway {
 class FixGateway : public FIX::Application, public FIX::MessageCracker {
 public:
     FixGateway(engine::MatchingEngine& engine,
-               market_data::MarketDataPublisher& publisher);
+               market_data::MarketDataPublisher& publisher,
+               persistence::PersistenceLayer* persistence = nullptr);
+
+    // Restore resting orders from DB into gateway maps before engine.start().
+    // Sets order_seq_ to max_seq so new IDs don't collide with restored ones.
+    void restoreOrders(const std::vector<engine::Order>& orders, int max_seq);
 
     void onFill(const engine::Fill& maker, const engine::Fill& taker);
     void onCancel(const engine::CancelRequest& req, bool found);
@@ -48,6 +55,7 @@ private:
 
     engine::MatchingEngine& engine_;
     market_data::MarketDataPublisher& publisher_;
+    persistence::PersistenceLayer* persistence_;
 
     std::atomic<int> order_seq_{0};
 

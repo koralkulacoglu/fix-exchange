@@ -10,24 +10,39 @@
 namespace gateway {
 
 FixGateway::FixGateway(engine::MatchingEngine& engine,
-                       market_data::MarketDataPublisher& publisher)
-    : engine_(engine), publisher_(publisher) {}
+                       market_data::MarketDataPublisher& publisher,
+                       persistence::PersistenceLayer* persistence)
+    : engine_(engine), publisher_(publisher), persistence_(persistence) {}
+
+void FixGateway::restoreOrders(const std::vector<engine::Order>& orders, int max_seq) {
+    std::lock_guard<std::mutex> lock(orders_mutex_);
+    for (const auto& o : orders) {
+        active_orders_.emplace(o.exchange_id, o);
+        clord_to_exchange_.emplace(o.clord_id, o.exchange_id);
+        // order_sessions_ left empty — onLogon re-binds when clients reconnect
+    }
+    if (max_seq > 0) order_seq_.store(max_seq);
+}
 
 void FixGateway::onLogon(const FIX::SessionID& id) {
     std::cout << "Logon: " << id << "\n";
-    std::string client_id = id.getSenderCompID().getValue();
+    std::string client_id = id.getTargetCompID().getValue();
     std::vector<engine::Order> client_orders;
     {
         std::lock_guard<std::mutex> lock(orders_mutex_);
-        for (const auto& [exch_id, order] : active_orders_)
-            if (order.client_id == client_id)
+        for (auto& [exch_id, order] : active_orders_) {
+            if (order.client_id == client_id) {
                 client_orders.push_back(order);
+                // Re-bind any restored orders (no session yet) to this reconnecting client
+                if (order_sessions_.count(exch_id) == 0)
+                    order_sessions_.emplace(exch_id, id);
+            }
+        }
     }
     for (const auto& order : client_orders) {
         auto msg = make_order_status_report(order);
         FIX::Session::sendToTarget(msg, id);
     }
-
 }
 
 void FixGateway::onLogout(const FIX::SessionID& id) {
@@ -42,7 +57,7 @@ void FixGateway::fromApp(const FIX::Message& msg, const FIX::SessionID& id)
 
 void FixGateway::onMessage(const FIX42::NewOrderSingle& msg, const FIX::SessionID& session_id) {
     engine::Order order;
-    order.client_id = session_id.getSenderCompID().getValue();
+    order.client_id = session_id.getTargetCompID().getValue();
 
     FIX::ClOrdID  clOrdID;  msg.get(clOrdID);
     FIX::Symbol   symbol;   msg.get(symbol);
@@ -93,7 +108,7 @@ void FixGateway::onMessage(const FIX42::NewOrderSingle& msg, const FIX::SessionI
 
 void FixGateway::onMessage(const FIX42::OrderCancelRequest& msg, const FIX::SessionID& session_id) {
     engine::CancelRequest req;
-    req.client_id = session_id.getSenderCompID().getValue();
+    req.client_id = session_id.getTargetCompID().getValue();
 
     FIX::OrigClOrdID origClOrdID; msg.get(origClOrdID);
     FIX::Symbol      symbol;      msg.get(symbol);
@@ -121,7 +136,7 @@ void FixGateway::onMessage(const FIX42::OrderCancelReplaceRequest& msg, const FI
     engine::ReplaceRequest req;
     req.new_clord_id = clOrdID.getValue();
     req.old_clord_id = origClOrdID.getValue();
-    req.client_id    = session_id.getSenderCompID().getValue();
+    req.client_id    = session_id.getTargetCompID().getValue();
     req.symbol       = symbol.getValue();
     req.side         = side.getValue();
     req.new_price    = price.getValue();
@@ -189,6 +204,13 @@ void FixGateway::onReplace(const engine::ReplaceRequest& req, bool found, int ne
     report.set(FIX::OrigClOrdID(req.old_clord_id));
     FIX::Session::sendToTarget(report, session_id);
     publisher_.on_replace(req, new_leaves_qty, order_old_price);
+    if (persistence_) {
+        persistence::PersistenceEvent evt;
+        evt.type       = persistence::PersistenceEvent::REPLACE;
+        evt.req        = req;
+        evt.leaves_qty = std::max(0, new_leaves_qty);
+        persistence_->push(std::move(evt));
+    }
 }
 
 void FixGateway::onCancel(const engine::CancelRequest& req, bool found) {
@@ -211,6 +233,12 @@ void FixGateway::onCancel(const engine::CancelRequest& req, bool found) {
         auto report = make_exec_report(order, ExecType::Canceled);
         FIX::Session::sendToTarget(report, session_id);
         publisher_.on_cancel(order);
+        if (persistence_) {
+            persistence::PersistenceEvent evt;
+            evt.type    = persistence::PersistenceEvent::CANCEL;
+            evt.str_val = req.orig_order_id;
+            persistence_->push(std::move(evt));
+        }
     }
 }
 
@@ -239,6 +267,12 @@ void FixGateway::onFill(const engine::Fill& maker, const engine::Fill& taker) {
     send_fill(maker);
     send_fill(taker);
     publisher_.on_fill(maker);
+    if (persistence_) {
+        persistence::PersistenceEvent evt;
+        evt.type = persistence::PersistenceEvent::FILL;
+        evt.fill = maker;
+        persistence_->push(std::move(evt));
+    }
 }
 
 void FixGateway::onTIFCancel(const engine::Order& order) {
@@ -258,6 +292,13 @@ void FixGateway::onTIFCancel(const engine::Order& order) {
 
 void FixGateway::onOrderRested(const engine::Order& order, int leaves_qty) {
     publisher_.on_new_order(order, leaves_qty);
+    if (persistence_) {
+        persistence::PersistenceEvent evt;
+        evt.type       = persistence::PersistenceEvent::RESTED;
+        evt.order      = order;
+        evt.leaves_qty = leaves_qty;
+        persistence_->push(std::move(evt));
+    }
 }
 
 

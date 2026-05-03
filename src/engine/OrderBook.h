@@ -15,6 +15,7 @@ public:
     explicit OrderBook(std::string symbol, FillCallback on_fill);
 
     int  add(Order order);   // returns leaves_qty after matching
+    void restore(Order order); // insert directly without matching (crash recovery)
     bool cancel(const std::string& order_id);
     int  replace(const std::string& order_id, double new_price, int new_qty); // returns new leaves_qty, -1 if not found
     int  available_to_fill(const Order& order) const;

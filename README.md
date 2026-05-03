@@ -1,6 +1,6 @@
 # fix-exchange
 
-A single-process equity exchange written in C++. Clients connect over TCP using the FIX 4.2 protocol to submit orders and receive execution reports. Market data is broadcast over UDP multicast as binary packets. A price-time priority matching engine runs on a dedicated thread.
+A single-process equity exchange written in C++. Clients connect over TCP using the FIX 4.2 protocol to submit orders and receive execution reports. Market data is broadcast over UDP multicast as binary packets. A price-time priority matching engine runs on a dedicated thread. Resting orders, fills, cancels, and runtime symbol registrations are persisted to SQLite so the book survives restarts and crashes.
 
 ![Trading UI](docs/screenshots/ui.png)
 
@@ -52,12 +52,13 @@ python3 tests/bench.py --count 1000
 | g++ or clang++ | C++14+ | system |
 | CMake | 3.20+ | system |
 | QuickFIX | 1.14+ | `sudo apt install libquickfix-dev` |
+| SQLite3 | 3.x | `sudo apt install libsqlite3-dev` |
 | OpenSSL | any | usually pre-installed |
 
 ### One-time setup (Ubuntu / WSL2)
 
 ```bash
-sudo apt install libquickfix-dev
+sudo apt install libquickfix-dev libsqlite3-dev
 ```
 
 ---
@@ -144,5 +145,6 @@ AdminPort=5002
 MulticastGroup=239.1.1.1
 MulticastPort=5003
 SessionPool=8
+DatabasePath=store/exchange.db
 ```
 

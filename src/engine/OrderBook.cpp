@@ -7,6 +7,18 @@ namespace engine {
 OrderBook::OrderBook(std::string symbol, FillCallback on_fill)
     : symbol_(std::move(symbol)), on_fill_(std::move(on_fill)) {}
 
+void OrderBook::restore(Order order) {
+    if (order.side == '1') {
+        auto& lst = bids_[order.price];
+        lst.push_back(order);
+        order_index_[order.exchange_id] = std::prev(lst.end());
+    } else {
+        auto& lst = asks_[order.price];
+        lst.push_back(order);
+        order_index_[order.exchange_id] = std::prev(lst.end());
+    }
+}
+
 int OrderBook::add(Order order) {
     order.leaves_qty = order.qty;
     try_match(order);

@@ -41,6 +41,10 @@ public:
     bool registerSymbol(const std::string& symbol);
     bool isValidSymbol(const std::string& symbol) const;
 
+    // Insert a previously-resting order directly into the book without matching.
+    // Must be called single-threaded before start().
+    void restoreOrder(const Order& order);
+
 private:
     struct WorkItem {
         enum Tag { ORDER, CANCEL, SNAPSHOT, REPLACE } tag;

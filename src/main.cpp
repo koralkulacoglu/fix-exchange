@@ -2,6 +2,7 @@
 #include "engine/MatchingEngine.h"
 #include "gateway/FixGateway.h"
 #include "market_data/MarketDataPublisher.h"
+#include "persistence/PersistenceLayer.h"
 
 #include <quickfix/FileLog.h>
 #include <quickfix/FileStore.h>
@@ -70,6 +71,12 @@ int main(int argc, char* argv[]) {
             ? 5003 : static_cast<uint16_t>(std::stoi(mcast_port_str));
         market_data::MarketDataPublisher publisher(mcast_group, mcast_port);
 
+        std::string db_path = read_exchange_value(config_path, "DatabasePath");
+        std::unique_ptr<persistence::PersistenceLayer> persistence;
+        if (!db_path.empty())
+            persistence = std::unique_ptr<persistence::PersistenceLayer>(
+                new persistence::PersistenceLayer(db_path));
+
         gateway::FixGateway* gw_ptr = nullptr;
 
         engine::MatchingEngine engine(
@@ -91,7 +98,7 @@ int main(int argc, char* argv[]) {
             symbols
         );
 
-        gateway::FixGateway gateway(engine, publisher);
+        gateway::FixGateway gateway(engine, publisher, persistence.get());
         gw_ptr = &gateway;
 
         FIX::SessionSettings settings(argv[1]);
@@ -110,7 +117,20 @@ int main(int argc, char* argv[]) {
         FIX::FileLogFactory   log(settings);
         FIX::SocketAcceptor   acceptor(gateway, store, settings, log);
 
-        admin::AdminGateway admin_gw(engine, admin_port, pool_ids);
+        admin::AdminGateway admin_gw(engine, admin_port, pool_ids, persistence.get());
+
+        // Crash recovery: restore symbols and resting orders before accepting connections
+        if (persistence) {
+            for (const auto& sym : persistence->loadSymbols())
+                engine.registerSymbol(sym);
+            int max_seq = persistence->loadMaxOrderSeq();
+            auto orders = persistence->loadRestingOrders();
+            gateway.restoreOrders(orders, max_seq);
+            for (const auto& order : orders)
+                engine.restoreOrder(order);
+            if (!orders.empty())
+                std::cout << "Recovered " << orders.size() << " resting order(s) from DB\n";
+        }
 
         engine.start();
         admin_gw.start();

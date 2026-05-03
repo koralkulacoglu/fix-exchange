@@ -53,6 +53,7 @@ The `[EXCHANGE]` section is not a standard QuickFIX section — it is parsed man
 | `MulticastGroup` | `239.1.1.1` | `239.1.1.1` | IPv4 multicast group address for the UDP market data feed. Must be in the locally-scoped range `239.0.0.0/8`. |
 | `MulticastPort` | `5003` | `5003` | UDP port subscribers bind to when joining the multicast group. |
 | `SessionPool` | `8` | `0` | Number of additional FIX session slots to pre-allocate at startup (named `S1`–`SN`). Clients claim a slot via `CLAIM-SESSION` on the admin gateway before connecting. `0` disables the pool. |
+| `DatabasePath` | `store/exchange.db` | *(disabled)* | Path to the SQLite database file used for persistence. If set, resting orders, fills, cancels, and runtime symbol registrations are recorded. On restart the book is restored from this file. Omit to run without persistence (all state is lost on crash). The directory must exist; the file is created if absent. |
 
 ### Admin gateway
 

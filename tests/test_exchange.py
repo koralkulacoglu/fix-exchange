@@ -14,6 +14,7 @@ Then run:
 
 import atexit
 import datetime
+import os
 import socket
 import struct
 import subprocess
@@ -27,8 +28,11 @@ PORT = 5001
 EXCHANGE_BIN = "./build/fix-exchange"
 EXCHANGE_CFG = "config/exchange.cfg"
 
+_proc = None
+
 
 def start_exchange():
+    global _proc
     proc = subprocess.Popen(
         [EXCHANGE_BIN, EXCHANGE_CFG],
         stdout=subprocess.DEVNULL,
@@ -41,11 +45,27 @@ def start_exchange():
     for _ in range(20):
         try:
             socket.create_connection((HOST, PORT), timeout=0.5).close()
+            _proc = proc
             return proc
         except OSError:
             time.sleep(0.2)
     proc.terminate()
     raise RuntimeError("Exchange failed to start within 4 seconds")
+
+
+def restart_exchange():
+    """Clean-stop the running exchange and start a fresh one (DB survives)."""
+    global _proc
+    if _proc is not None:
+        _proc.terminate()
+        try:
+            _proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            _proc.kill()
+            _proc.wait()
+        _proc = None
+    time.sleep(0.2)  # let OS release the port
+    start_exchange()
 
 TARGET = "EXCHANGE"
 SEP = "\x01"
@@ -1114,10 +1134,185 @@ def test_pool_session_multiclient():
 
 
 # ---------------------------------------------------------------------------
+# Persistence recovery tests  (these restart the exchange mid-run)
+# ---------------------------------------------------------------------------
+
+def test_persistence_resting_survives_restart():
+    # TSLA was registered by test_admin_register_symbol; its only resting order
+    # is a buy @ 200.  We place a resting sell @ 300 (won't cross), stop the
+    # exchange, restart it, then verify the sell was recovered by placing a
+    # crossing buy that should fill.
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
+        s.send("D", {
+            "11": "PERSIST-REST-1",
+            "21": "1",
+            "55": "TSLA",
+            "54": "2",       # sell
+            "40": "2",
+            "44": "300.00",
+            "38": "5",
+            "60": now_str(),
+        })
+        ack = recv_exec(s)
+        assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
+
+    time.sleep(0.05)   # wait for persistence thread to flush
+    restart_exchange()
+
+    # Crossing buy @ 300 should fill against the restored resting sell
+    comp_id2 = claim_session()
+    try:
+        s2 = FixSession(sender=comp_id2)
+        s2.connect()
+        s2.logon()
+        s2.send("D", {
+            "11": "PERSIST-REST-2",
+            "21": "1",
+            "55": "TSLA",
+            "54": "1",       # buy
+            "40": "2",
+            "44": "300.00",
+            "38": "5",
+            "60": now_str(),
+        })
+        ack2 = recv_exec(s2)
+        assert ack2.get("150") == "0", f"Expected New ack, got {ack2.get('150')}"
+        fills = drain(s2, timeout=0.5)
+        assert len(fills) >= 1, \
+            f"Expected fill from restored resting sell, got none — resting order not recovered"
+        s2.logout()
+        s2.close()
+    finally:
+        release_session(comp_id2)
+
+
+def test_persistence_cancelled_not_restored():
+    # Place a resting sell @ 400, cancel it, restart, verify a crossing buy
+    # @ 400 does NOT fill (cancelled orders must not appear in recovered book).
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
+        now = now_str()
+        s.send("D", {
+            "11": "PERSIST-CXL-1",
+            "21": "1",
+            "55": "TSLA",
+            "54": "2",
+            "40": "2",
+            "44": "400.00",
+            "38": "5",
+            "60": now,
+        })
+        ack = recv_exec(s)
+        assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
+        s.send("F", {
+            "41": "PERSIST-CXL-1",
+            "11": "PERSIST-CXL-1-C",
+            "55": "TSLA",
+            "54": "2",
+            "38": "5",
+            "60": now,
+        })
+        cxl = recv_exec(s)
+        assert cxl.get("150") == "4", f"Expected Canceled, got {cxl.get('150')}"
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
+
+    time.sleep(0.05)
+    restart_exchange()
+
+    comp_id2 = claim_session()
+    try:
+        s2 = FixSession(sender=comp_id2)
+        s2.connect()
+        s2.logon()
+        s2.send("D", {
+            "11": "PERSIST-CXL-2",
+            "21": "1",
+            "55": "TSLA",
+            "54": "1",       # buy — would cross the 400 sell if it survived
+            "40": "2",
+            "44": "400.00",
+            "38": "5",
+            "60": now_str(),
+        })
+        ack2 = recv_exec(s2)
+        assert ack2.get("150") == "0", f"Expected New ack, got {ack2.get('150')}"
+        fills = drain(s2, timeout=0.3)
+        assert len(fills) == 0, \
+            f"Expected no fills — cancelled order must not be in recovered book, got {len(fills)} fill(s)"
+        # Clean up the resting buy we just placed
+        s2.send("F", {
+            "41": "PERSIST-CXL-2",
+            "11": "PERSIST-CXL-2-C",
+            "55": "TSLA",
+            "54": "1",
+            "38": "5",
+            "60": now_str(),
+        })
+        recv_exec(s2)
+        s2.logout()
+        s2.close()
+    finally:
+        release_session(comp_id2)
+
+
+def test_persistence_symbol_survives_restart():
+    # Register NFLX at runtime, restart, verify orders for NFLX are accepted.
+    # If NFLX is already in the DB from a prior test run, REGISTER returns ERROR
+    # but the symbol is still available — the test assertion covers both cases.
+    admin_send("REGISTER NFLX")
+    time.sleep(0.05)
+    restart_exchange()
+
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
+        s.send("D", {
+            "11": "PERSIST-SYM-1",
+            "21": "1",
+            "55": "NFLX",
+            "54": "1",
+            "40": "2",
+            "44": "500.00",
+            "38": "1",
+            "60": now_str(),
+        })
+        ack = recv_exec(s)
+        assert ack.get("150") == "0", \
+            f"Expected NFLX order accepted after restart (ExecType=New), got {ack.get('150')} — symbol not persisted"
+        s.logout()
+        s.close()
+    finally:
+        release_session(comp_id)
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
 def main():
+    # Remove DB from any prior run so accumulated resting orders / symbols
+    # don't interfere with tests that assume a clean book.
+    try:
+        os.remove("store/exchange.db")
+    except FileNotFoundError:
+        pass
+
     print("\nStarting exchange …")
     start_exchange()
     print("Running FIX integration tests …\n")
@@ -1140,6 +1335,9 @@ def main():
     run("OrderCancelReplaceRequest → unknown order → OrderCancelReject", test_replace_unknown_order)
     run("OrderCancelReplaceRequest → symbol change → OrderCancelReject", test_replace_symbol_change_rejected)
     run("Pool sessions → two concurrent FIX clients", test_pool_session_multiclient)
+    run("Persistence → resting order survives exchange restart", test_persistence_resting_survives_restart)
+    run("Persistence → cancelled order not restored after restart", test_persistence_cancelled_not_restored)
+    run("Persistence → runtime-registered symbol survives restart", test_persistence_symbol_survives_restart)
 
     print()
     if failures:

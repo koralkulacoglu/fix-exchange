@@ -2,7 +2,7 @@
 
 ## Overview
 
-A single-process equity exchange in C++ using the FIX 4.2 protocol. Three threads with a fixed topology; the matching engine is the only thread that touches order book state. Market data is broadcast via UDP multicast as binary packets rather than over FIX sessions.
+A single-process equity exchange in C++ using the FIX 4.2 protocol. Four threads with a fixed topology; the matching engine is the only thread that touches order book state. Market data is broadcast via UDP multicast as binary packets rather than over FIX sessions. Order state is persisted to SQLite so the book survives restarts.
 
 ---
 
@@ -54,27 +54,30 @@ flowchart TD
 
 ## Threading Model
 
-Three threads, fixed topology:
+Four threads, fixed topology:
 
 - **QuickFIX thread** — runs the FIX acceptor, calls `FixGateway` callbacks (`onLogon`, `onMessage`, etc.)
 - **Engine thread** — the only thread that reads or writes order book state; `MatchingEngine::run()` drains a `std::queue<WorkItem>` via `std::mutex + std::condition_variable`
 - **Admin thread** — `AdminGateway` accepts plain-TCP connections and calls `MatchingEngine::registerSymbol()`
+- **Persistence thread** — `PersistenceLayer::run()` drains a `std::queue<PersistenceEvent>` every 5 ms and flushes each batch to SQLite in a single transaction
 
 `FixGateway` submits work to the engine via `engine_.submit()` / `engine_.cancel()` / `engine_.replace()`, all of which lock the work queue. Fill and cancel callbacks are invoked on the engine thread and must be thread-safe.
 
 `MarketDataPublisher` holds a single UDP multicast socket and an atomic sequence counter. It is called exclusively from the engine thread (fill/cancel/replace/rested callbacks), so no mutex is needed.
 
+The engine thread (via gateway callbacks) enqueues `PersistenceEvent` structs onto the persistence queue without blocking. The persistence thread wakes up, batches all pending events, and writes them in one `BEGIN … COMMIT`. This keeps disk I/O off the matching hot path at the cost of a small dual-write window: if the process crashes between an exec report being sent and the flush completing, the DB will not reflect that event and the order will re-appear as resting on recovery.
+
 ---
 
 ## FIX Message Types
 
-| Direction | Message | Tag | Purpose |
-|-----------|---------|-----|---------|
-| Client → Exchange | NewOrderSingle | D | Submit a limit or market order |
-| Client → Exchange | OrderCancelRequest | F | Cancel a resting order |
-| Client → Exchange | OrderCancelReplaceRequest | G | Modify qty or price of a resting order |
-| Exchange → Client | ExecutionReport | 8 | Ack, fill, cancel confirm, order status replay |
-| UDP multicast | — | — | Binary `MdPacket` (46 bytes) per book event |
+| Direction         | Message                   | Tag | Purpose                                        |
+| ----------------- | ------------------------- | --- | ---------------------------------------------- |
+| Client → Exchange | NewOrderSingle            | D   | Submit a limit or market order                 |
+| Client → Exchange | OrderCancelRequest        | F   | Cancel a resting order                         |
+| Client → Exchange | OrderCancelReplaceRequest | G   | Modify qty or price of a resting order         |
+| Exchange → Client | ExecutionReport           | 8   | Ack, fill, cancel confirm, order status replay |
+| UDP multicast     | —                         | —   | Binary `MdPacket` (46 bytes) per book event    |
 
 FIX version: **4.2**
 
@@ -82,15 +85,15 @@ FIX version: **4.2**
 
 Defined in `src/market_data/MarketDataEvent.h`. Packed struct, little-endian:
 
-| Field | Type | Meaning |
-|---|---|---|
-| `seq` | uint64 | Monotonically increasing; gap detection |
-| `event_type` | uint8 | `NewOrder`=0, `Cancel`=1, `FillResting`=2, `Trade`=3, `ReplaceInPlace`=4, `ReplaceDelete`=5, `ReplaceNew`=6 |
-| `side` | uint8 | `'0'`=bid, `'1'`=ask, `'2'`=trade |
-| `symbol` | char[8] | NUL-padded |
-| `price` | double | IEEE 754 |
-| `qty` | int32 | leaves_qty for book events; fill qty for `Trade` |
-| `exchange_id` | char[16] | NUL-padded |
+| Field         | Type     | Meaning                                                                                                     |
+| ------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `seq`         | uint64   | Monotonically increasing; gap detection                                                                     |
+| `event_type`  | uint8    | `NewOrder`=0, `Cancel`=1, `FillResting`=2, `Trade`=3, `ReplaceInPlace`=4, `ReplaceDelete`=5, `ReplaceNew`=6 |
+| `side`        | uint8    | `'0'`=bid, `'1'`=ask, `'2'`=trade                                                                           |
+| `symbol`      | char[8]  | NUL-padded                                                                                                  |
+| `price`       | double   | IEEE 754                                                                                                    |
+| `qty`         | int32    | leaves_qty for book events; fill qty for `Trade`                                                            |
+| `exchange_id` | char[16] | NUL-padded                                                                                                  |
 
 ---
 
@@ -156,7 +159,7 @@ Every order carries two IDs:
 - `clord_id` — FIX tag 11, client-assigned, used for cancel references
 - `exchange_id` — exchange-assigned (`EXCH-<seq>`), stable internal key
 
-`FixGateway` maintains three maps under `orders_mutex_`: `order_sessions_` (exchange_id → SessionID), `active_orders_` (exchange_id → Order), and `clord_to_exchange_` (clord_id → exchange_id).
+`FixGateway` maintains three maps under `orders_mutex_`: `order_sessions_` (exchange*id → SessionID), `active_orders*`(exchange_id → Order), and`clord*to_exchange*` (clord_id → exchange_id).
 
 ---
 
@@ -169,17 +172,8 @@ On client logon, `FixGateway::onLogon` sends `ExecutionReport(ExecType=I)` for e
 ## Key Design Decisions
 
 - **Single-threaded matching engine** — no locking complexity on the hot path; the gateway posts work onto a queue consumed by one engine thread.
-- **In-memory only** — no persistence; order IDs reset on restart.
+- **Async persistence** — all SQLite writes happen on a dedicated thread. The engine never blocks on disk. Set `DatabasePath` in `[EXCHANGE]` to enable; omit for in-memory-only mode.
+- **Crash recovery** — on startup, `resting_orders` is loaded into the engine before the FIX acceptor starts. Reconnecting clients receive `ExecType=I` status reports for their restored orders via `onLogon`.
 - **One order book per symbol** — `MatchingEngine` holds a `std::unordered_map<string, OrderBook>`.
 - **UDP multicast market data** — every book event emits a 46-byte binary `MdPacket` to a multicast group. Any number of subscribers receive the same feed with a single `sendto()`. No session management, no subscription protocol.
 - **ExecutionReport to parties only** — fill `ExecutionReport` messages go to the maker and taker over their FIX sessions; book-level market data goes to the multicast group.
-
----
-
-## What's Out of Scope
-
-- Persistent order log / crash recovery
-- Risk checks / pre-trade limits
-- TLS / authentication
-- Stop orders
-- Drop-copy sessions
