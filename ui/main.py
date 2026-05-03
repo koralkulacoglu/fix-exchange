@@ -192,7 +192,9 @@ def _book_snapshot() -> dict:
 async def _fix_reader():
     while True:
         msg = await fix.recv()
-        if msg.get("35") == "8":
+        if msg.get("35") == "1":  # TestRequest — must reply with Heartbeat
+            await fix.send("0", {"112": msg.get("112", "")})
+        elif msg.get("35") == "8":
             exec_log.append(msg)
             text = json.dumps({"type": "exec", **msg})
             for ws in list(ws_clients):
