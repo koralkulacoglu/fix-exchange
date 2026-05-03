@@ -22,6 +22,7 @@ public:
 
     std::vector<BookLevel> getBids() const;
     std::vector<BookLevel> getAsks() const;
+    std::vector<Order> getOrders() const;
 
 private:
     void try_match(Order& aggressor);

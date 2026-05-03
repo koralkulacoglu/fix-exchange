@@ -197,13 +197,32 @@ def _book_snapshot() -> dict:
 async def _fix_reader():
     while True:
         msg = await fix.recv()
-        if msg.get("35") == "1":  # TestRequest — must reply with Heartbeat
+        if msg.get("35") == "1":   # TestRequest — reply with Heartbeat
             await fix.send("0", {"112": msg.get("112", "")})
         elif msg.get("35") == "8":
             exec_log.append(msg)
             text = json.dumps({"type": "exec", **msg})
             for ws in list(ws_clients):
                 asyncio.create_task(_safe_send(ws, text))
+        elif msg.get("35") == "W":  # MarketDataSnapshotFullRefresh — seed book
+            symbol = msg.get("55", "")
+            if symbol in order_book:
+                bids, asks = {}, {}
+                for e in msg.get("md_entries", []):
+                    p, q = e.get("price"), e.get("qty", 0)
+                    if p is None or q <= 0:
+                        continue
+                    eid = e.get("eid")
+                    if e["type"] == "0":
+                        bids[p] = bids.get(p, 0) + q
+                        if eid:
+                            order_state[eid] = {"price": p, "qty": q, "symbol": symbol, "side": ord('0')}
+                    elif e["type"] == "1":
+                        asks[p] = asks.get(p, 0) + q
+                        if eid:
+                            order_state[eid] = {"price": p, "qty": q, "symbol": symbol, "side": ord('1')}
+                order_book[symbol]["bids"] = bids
+                order_book[symbol]["asks"] = asks
 
 # ---------------------------------------------------------------------------
 # Lifespan: claim FIX session, bind UDP multicast socket
@@ -220,6 +239,17 @@ async def lifespan(app: FastAPI):
     await fix.connect(FIX_HOST, FIX_PORT)
     await fix.logon()
     exec_log.extend(fix.order_statuses)
+
+    # Seed order book with a full snapshot from the exchange before going live
+    syms = list(order_book.keys())
+    if syms:
+        md_body = [
+            ("262", "INIT"), ("263", "0"), ("264", "0"),
+            ("267", "2"), ("269", "0"), ("269", "1"),
+            ("146", str(len(syms))),
+        ] + [("55", s) for s in syms]
+        await fix.send("V", md_body)
+
     asyncio.create_task(_fix_reader())
 
     # Bind UDP multicast socket

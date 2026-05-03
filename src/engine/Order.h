@@ -54,6 +54,7 @@ struct BookSnapshot {
     std::string symbol;
     std::vector<BookLevel> bids;  // price-descending
     std::vector<BookLevel> asks;  // price-ascending
+    std::vector<Order> orders;    // individual resting orders
 };
 
 } // namespace engine

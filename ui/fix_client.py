@@ -18,7 +18,8 @@ def build_message(msg_type: str, seq: int, body_fields: dict, sender: str) -> by
         f"34={seq}{SEP}"
         f"52={ts}{SEP}"
     )
-    body = header + "".join(f"{k}={v}{SEP}" for k, v in body_fields.items())
+    pairs = body_fields.items() if isinstance(body_fields, dict) else body_fields
+    body = header + "".join(f"{k}={v}{SEP}" for k, v in pairs)
     prefix = f"8=FIX.4.2{SEP}9={len(body.encode('ascii'))}{SEP}"
     raw = prefix + body
     raw += f"10={_checksum(raw)}{SEP}"
@@ -31,6 +32,25 @@ def parse_fields(raw: bytes) -> dict:
         if "=" in pair:
             tag, _, val = pair.partition("=")
             fields[tag] = val
+
+    if fields.get("35") == "W":
+        entries, cur = [], {}
+        for pair in raw.decode("ascii", errors="replace").split("\x01"):
+            if "=" not in pair:
+                continue
+            tag, _, val = pair.partition("=")
+            if tag == "269":
+                if cur: entries.append(cur)
+                cur = {"type": val}
+            elif tag == "270" and cur:
+                cur["price"] = float(val)
+            elif tag == "271" and cur:
+                cur["qty"] = int(float(val))
+            elif tag == "278" and cur:
+                cur["eid"] = val
+        if cur: entries.append(cur)
+        fields["md_entries"] = entries
+
     return fields
 
 

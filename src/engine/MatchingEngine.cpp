@@ -148,6 +148,7 @@ void MatchingEngine::run() {
                 s.symbol = sym;
                 s.bids   = book.getBids();
                 s.asks   = book.getAsks();
+                s.orders = book.getOrders();
                 snaps.push_back(std::move(s));
             }
             item.snapshot_cb(std::move(snaps));

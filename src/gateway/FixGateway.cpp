@@ -302,4 +302,30 @@ void FixGateway::onOrderRested(const engine::Order& order, int leaves_qty) {
 }
 
 
+void FixGateway::onMessage(const FIX42::MarketDataRequest& msg,
+                           const FIX::SessionID& session_id)
+{
+    FIX::MDReqID reqId; msg.get(reqId);
+    std::string req_id = reqId.getValue();
+
+    std::unordered_set<std::string> requested;
+    FIX::NoRelatedSym numSyms; msg.get(numSyms);
+    for (int i = 1; i <= numSyms; ++i) {
+        FIX42::MarketDataRequest::NoRelatedSym grp;
+        msg.getGroup(i, grp);
+        FIX::Symbol sym; grp.get(sym);
+        requested.insert(sym.getValue());
+    }
+
+    engine_.requestSnapshot(
+        [req_id, session_id, requested](std::vector<engine::BookSnapshot> snaps) {
+            for (const auto& snap : snaps) {
+                if (!requested.empty() && !requested.count(snap.symbol))
+                    continue;
+                auto reply = make_md_snapshot(req_id, snap);
+                FIX::Session::sendToTarget(reply, session_id);
+            }
+        });
+}
+
 } // namespace gateway

@@ -160,6 +160,15 @@ std::vector<BookLevel> OrderBook::getAsks() const {
     return out;
 }
 
+std::vector<Order> OrderBook::getOrders() const {
+    std::vector<Order> out;
+    for (const auto& [price, orders] : bids_)
+        for (const auto& o : orders) out.push_back(o);
+    for (const auto& [price, orders] : asks_)
+        for (const auto& o : orders) out.push_back(o);
+    return out;
+}
+
 Fill OrderBook::make_fill(const Order& order, double price, int qty, int leaves) const {
     return Fill{
         symbol_ + "-" + std::to_string(++const_cast<OrderBook*>(this)->exec_seq_),

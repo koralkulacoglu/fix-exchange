@@ -7,9 +7,12 @@
 #include <quickfix/Session.h>
 #include <quickfix/SessionID.h>
 #include <quickfix/fix42/ExecutionReport.h>
+#include <quickfix/fix42/MarketDataRequest.h>
+#include <quickfix/fix42/MarketDataSnapshotFullRefresh.h>
 #include <quickfix/fix42/NewOrderSingle.h>
 #include <quickfix/fix42/OrderCancelReplaceRequest.h>
 #include <quickfix/fix42/OrderCancelRequest.h>
+#include <unordered_set>
 #include <atomic>
 #include <mutex>
 #include <vector>
@@ -52,6 +55,7 @@ private:
     void onMessage(const FIX42::NewOrderSingle& msg, const FIX::SessionID& id);
     void onMessage(const FIX42::OrderCancelRequest& msg, const FIX::SessionID& id);
     void onMessage(const FIX42::OrderCancelReplaceRequest& msg, const FIX::SessionID& id);
+    void onMessage(const FIX42::MarketDataRequest& msg, const FIX::SessionID& id);
 
     engine::MatchingEngine& engine_;
     market_data::MarketDataPublisher& publisher_;

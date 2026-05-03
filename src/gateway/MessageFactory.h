@@ -1,6 +1,7 @@
 #pragma once
 #include "engine/Order.h"
 #include <quickfix/fix42/ExecutionReport.h>
+#include <quickfix/fix42/MarketDataSnapshotFullRefresh.h>
 #include <quickfix/fix42/OrderCancelReject.h>
 #include <string>
 
@@ -111,6 +112,24 @@ inline FIX42::OrderCancelReject make_cancel_reject(
         FIX::CxlRejResponseTo('2')
     );
     msg.set(FIX::Text(reason));
+    return msg;
+}
+
+inline FIX42::MarketDataSnapshotFullRefresh make_md_snapshot(
+    const std::string& req_id,
+    const engine::BookSnapshot& snap)
+{
+    FIX42::MarketDataSnapshotFullRefresh msg(FIX::Symbol(snap.symbol));
+    msg.set(FIX::MDReqID(req_id));
+
+    for (const auto& order : snap.orders) {
+        FIX42::MarketDataSnapshotFullRefresh::NoMDEntries grp;
+        grp.set(FIX::MDEntryType(order.side == '1' ? '0' : '1'));
+        grp.set(FIX::MDEntryPx(order.price));
+        grp.set(FIX::MDEntrySize(order.leaves_qty));
+        grp.setField(278, order.exchange_id);
+        msg.addGroup(grp);
+    }
     return msg;
 }
 
