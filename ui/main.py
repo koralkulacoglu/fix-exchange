@@ -167,7 +167,12 @@ class MdProtocol(asyncio.DatagramProtocol):
         seq, evt, side, sym_b, price, qty, exch_b = struct.unpack(MD_FMT, data)
         symbol      = sym_b.rstrip(b"\x00").decode("ascii")
         exchange_id = exch_b.rstrip(b"\x00").decode("ascii")
+        is_new = symbol not in order_book
         _apply_md(evt, side, symbol, price, qty, exchange_id)
+        if is_new:
+            sym_msg = json.dumps({"type": "symbols", "symbols": list(order_book.keys())})
+            for ws in list(ws_clients):
+                asyncio.create_task(_safe_send(ws, sym_msg))
         msg = json.dumps({
             "type": "md", "seq": seq, "evt": evt, "side": side,
             "symbol": symbol, "price": price, "qty": qty, "eid": exchange_id,
@@ -260,7 +265,7 @@ async def websocket_endpoint(ws: WebSocket):
         # Send book snapshot with per-order state so the client can seed bookOrders
         await ws.send_text(json.dumps({
             "type": "snapshot",
-            "symbols": SYMBOLS,
+            "symbols": list(order_book.keys()),
             "book": _book_snapshot(),
             "orders": [
                 {"eid": eid, "symbol": s["symbol"], "side": s["side"],

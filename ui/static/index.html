@@ -276,6 +276,7 @@
       if      (msg.type === 'snapshot') onSnapshot(msg);
       else if (msg.type === 'md')       onMd(msg);
       else if (msg.type === 'exec')     onExec(msg);
+      else if (msg.type === 'symbols')  onSymbols(msg);
     };
   }
 
@@ -306,6 +307,18 @@
     renderTabs();
     renderBook();
     renderChart();
+  }
+
+  function onSymbols(msg) {
+    let changed = false;
+    for (const sym of msg.symbols) {
+      if (!symbols.includes(sym)) {
+        symbols.push(sym);
+        if (!book[sym]) book[sym] = { bids: new Map(), asks: new Map() };
+        changed = true;
+      }
+    }
+    if (changed) renderTabs();
   }
 
   function setLevel(lvls, price, qty) {
