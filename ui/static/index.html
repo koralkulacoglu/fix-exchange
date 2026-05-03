@@ -383,7 +383,14 @@
     const price    = parseFloat(msg['44'] || 0);
     const leavesQty = parseInt(msg['151'] || 0);
 
-    if (execType === 'I') return;  // order status replay from previous session — ignore
+    if (execType === 'I') {
+      if (!orders.has(clordId) && leavesQty > 0) {
+        orderSeq++;
+        orders.set(clordId, { n: orderSeq, symbol, side, qty, price, leavesQty, statusText: 'New', statusClass: 'st-new', active: true });
+        renderBlotter();
+      }
+      return;
+    }
 
     const statusMap = {
       '0': ['New',      'st-new'],

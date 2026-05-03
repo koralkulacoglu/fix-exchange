@@ -251,11 +251,19 @@ void FixGateway::onFill(const engine::Fill& maker, const engine::Fill& taker) {
             auto sit = order_sessions_.find(fill.exchange_id);
             if (sit == order_sessions_.end()) return;
             session_id = sit->second;
-            if (fill.leaves_qty == 0)
-                order_sessions_.erase(sit);
             auto oit = active_orders_.find(fill.exchange_id);
-            if (oit != active_orders_.end())
+            if (oit != active_orders_.end()) {
                 order = oit->second;
+                if (fill.leaves_qty == 0) {
+                    order_sessions_.erase(sit);
+                    clord_to_exchange_.erase(oit->second.clord_id);
+                    active_orders_.erase(oit);
+                } else {
+                    oit->second.leaves_qty = fill.leaves_qty;
+                }
+            } else if (fill.leaves_qty == 0) {
+                order_sessions_.erase(sit);
+            }
         }
         order.leaves_qty = fill.leaves_qty;
 
