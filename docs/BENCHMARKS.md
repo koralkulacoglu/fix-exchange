@@ -7,7 +7,7 @@ End-to-end latency and throughput measured over loopback TCP against a Release b
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install rich matplotlib
-.venv/bin/python3 tests/bench.py [options]
+.venv/bin/python3 bench/bench.py [options]
 ```
 
 | Flag | Default | Description |
