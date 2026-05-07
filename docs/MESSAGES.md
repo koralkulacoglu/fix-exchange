@@ -15,10 +15,10 @@
 |-------|---------|
 | `0` | New — order accepted and resting |
 | `1` | PartialFill — partial fill, order still resting |
-| `2` | Fill — fully filled |
-| `4` | Canceled — cancel confirmed |
+| `2` | Fill — fully filled; also sent on reconnect to replay historical fills |
+| `4` | Canceled — cancel confirmed; also sent on reconnect to replay historical cancels |
 | `8` | Rejected — order rejected (e.g. unknown symbol) |
-| `I` | OrderStatus — open order replayed on reconnect |
+| `I` | OrderStatus — open/resting order replayed on reconnect |
 
 ---
 

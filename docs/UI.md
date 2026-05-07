@@ -51,8 +51,9 @@ Browser  ←→  WebSocket (/ws)  ←→  AsyncFixSession (per server)  ←→  
 
 - **One FIX session per server process.** On startup the backend calls `CLAIM-SESSION` on the admin gateway to obtain a pool slot (e.g. `S1`), connects to the exchange, and holds that session for its entire lifetime. The session is released on shutdown.
 - **Single shared UDP listener.** One asyncio datagram endpoint joins the multicast group and fans out parsed `MdPacket` events to all connected clients. The order book is maintained in memory on the backend and snapshotted to new clients on connect.
-- **Exec log.** All execution reports received from the exchange are accumulated in memory. New WebSocket connections replay the full log so the blotter survives page reloads.
-- **No external FIX library.** Hand-rolled framing adapted from `tests/test_exchange.py`.
+- **Exec log.** All execution reports received from the exchange are accumulated in memory. New WebSocket connections replay the full log so the blotter survives page reloads. Historical fills and cancels are also seeded from the exchange on logon (ExecType=2/4 replay via the persistence layer), so the blotter is populated even after a server restart.
+- **Trade history.** Per-symbol trade history is loaded from the exchange at startup via `MarketDataRequest` (35=V) and kept current as live UDP trade packets arrive. Survives page reloads within the same server session; repopulated from the exchange on the next server start.
+- **No external FIX library.** Hand-rolled framing shared with `tests/helpers.py`.
 
 ---
 
@@ -64,7 +65,7 @@ All messages are JSON. The browser connects to `ws://<host>:<port>/ws`.
 
 | `type` | Description |
 |--------|-------------|
-| `snapshot` | Sent on connect. Contains `symbols` (list), `book` (top-10 bids/asks per symbol as `[[price, qty], ...]`), and `orders` (list of resting orders as `{eid, symbol, side, price, qty}`). |
+| `snapshot` | Sent on connect. Contains `symbols` (list), `book` (top-10 bids/asks per symbol as `[[price, qty], ...]`), `orders` (list of resting orders as `{eid, symbol, side, price, qty}`), and `trade_history` (map of symbol → `[{time, value}, ...]` for the price chart). |
 | `md` | Incremental market data update. Fields: `evt`, `side`, `symbol`, `price`, `qty`, `seq`. See [MESSAGES.md](MESSAGES.md) for event type values. |
 | `exec` | ExecutionReport forwarded from the exchange. FIX tag numbers as string keys (`"35"`, `"150"`, `"11"`, etc.). |
 

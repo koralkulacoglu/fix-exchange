@@ -355,7 +355,7 @@ def test_clordid_session_token_changes_on_restart():
     with ui_server_ctx():
         clordid1 = asyncio.run(_place_and_get_clordid())
 
-    # Server teardown + next startup takes > 1 s, so _session_ts naturally differs.
+    # _session_ts uses millisecond precision, so even sub-second restarts produce distinct tokens.
     with ui_server_ctx():
         clordid2 = asyncio.run(_place_and_get_clordid())
 

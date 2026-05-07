@@ -40,7 +40,7 @@ Generate results and charts locally:
 
 ```bash
 pip install rich matplotlib
-python3 tests/bench.py --count 1000
+python3 bench/bench.py --count 1000
 ```
 
 ---
@@ -118,10 +118,10 @@ Each server process claims one FIX session from the pool. Run two instances on d
 The test suite manages the exchange process itself — no manual server start required:
 
 ```bash
-python3 tests/test_exchange.py
+python3 tests/run_all.py
 ```
 
-The binary must be built first. Tests connect over raw TCP on port 5001 using hand-rolled FIX framing with no external Python libraries.
+The binary must be built first. Tests connect over raw TCP on port 5001 using hand-rolled FIX framing with no external Python libraries. UI server tests additionally start a uvicorn subprocess on port 18080 and use `websockets` to connect.
 
 ---
 

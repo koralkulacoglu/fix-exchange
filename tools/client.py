@@ -17,7 +17,7 @@ import socket
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
-from test_exchange import FixSession  # noqa: E402
+from helpers import FixSession  # noqa: E402  # type: ignore[import]
 
 # ---------------------------------------------------------------------------
 # Labels

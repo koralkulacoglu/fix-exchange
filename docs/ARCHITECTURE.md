@@ -165,7 +165,13 @@ Every order carries two IDs:
 
 ## Logon Sequence
 
-On client logon, `FixGateway::onLogon` sends `ExecutionReport(ExecType=I)` for every open order belonging to this client's `SenderCompID` — allowing reconnecting clients to recover their resting order state. No market data snapshot is sent; clients receive the live UDP multicast feed going forward.
+On client logon, `FixGateway::onLogon` sends a sequence of `ExecutionReport` messages to the reconnecting client:
+
+1. **ExecType=I** — one report per open/resting order belonging to this client's `SenderCompID`, so the client can rebuild its live order state.
+2. **ExecType=2 (Fill)** — replayed from the persistence layer for each historical fill recorded under this `client_id`.
+3. **ExecType=4 (Canceled)** — replayed for each historical cancel.
+
+No market data snapshot is sent; clients receive the live UDP multicast feed going forward.
 
 ---
 

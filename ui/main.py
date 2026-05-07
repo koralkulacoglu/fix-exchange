@@ -64,7 +64,7 @@ exec_log:      list = []  # all exec reports received this server lifetime
 
 # Startup token embedded in every ClOrdID so IDs are unique across server
 # restarts — prevents collisions with historical fills that share a recycled ID.
-_session_ts = int(datetime.datetime.now().timestamp())
+_session_ts = int(datetime.datetime.now().timestamp() * 1000)
 
 # FIX session — owned by the server, shared across all WebSocket connections
 fix:         AsyncFixSession | None = None
