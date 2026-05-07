@@ -11,7 +11,7 @@
 namespace persistence {
 
 struct PersistenceEvent {
-    enum Type { RESTED, FILL, CANCEL, REPLACE, SYMBOL } type;
+    enum Type { RESTED, FILL, TAKER_FILL, CANCEL, REPLACE, SYMBOL } type;
     engine::Order          order;       // RESTED
     int                    leaves_qty{0}; // RESTED, REPLACE
     engine::Fill           fill;        // FILL
@@ -28,6 +28,23 @@ public:
     std::vector<std::string>   loadSymbols();
     std::vector<engine::Order> loadRestingOrders();
     int                        loadMaxOrderSeq();
+
+    // History reads — safe to call concurrently under WAL mode
+    struct HistoricalFill {
+        char exec_type;  // '2' = fill, '4' = cancel
+        std::string exchange_id, clord_id, symbol;
+        char side;
+        double price;
+        int qty;
+        long long ts;
+    };
+    struct HistoricalTrade {
+        double price;
+        int qty;
+        long long ts;
+    };
+    std::vector<HistoricalFill>  loadHistoricalFills(const std::string& client_id);
+    std::vector<HistoricalTrade> loadHistoricalTrades(const std::string& symbol, int limit = 500);
 
     // Non-blocking enqueue — called from engine/admin threads
     void push(PersistenceEvent evt);

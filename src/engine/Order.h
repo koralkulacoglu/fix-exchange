@@ -36,6 +36,7 @@ struct ReplaceRequest {
 
 struct Fill {
     std::string exec_id;
+    std::string clord_id;      // FIX tag 11 of the filled order
     std::string exchange_id;   // exchange_id of the filled order
     std::string client_id;
     std::string symbol;

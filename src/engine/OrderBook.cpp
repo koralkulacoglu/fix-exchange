@@ -172,6 +172,7 @@ std::vector<Order> OrderBook::getOrders() const {
 Fill OrderBook::make_fill(const Order& order, double price, int qty, int leaves) const {
     return Fill{
         symbol_ + "-" + std::to_string(++const_cast<OrderBook*>(this)->exec_seq_),
+        order.clord_id,
         order.exchange_id,
         order.client_id,
         symbol_,

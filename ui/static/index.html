@@ -303,6 +303,11 @@
     for (const o of (msg.orders || [])) {
       bookOrders[o.eid] = { price: o.price, qty: o.qty };
     }
+    for (const [sym, points] of Object.entries(msg.trade_history || {})) {
+      tradeHistory[sym] = points.slice();
+      if (points.length > 0)
+        lastTradeTime[sym] = points[points.length - 1].time;
+    }
     if (!activeSym && symbols.length) activeSym = symbols[0];
     renderTabs();
     renderBook();
@@ -409,6 +414,11 @@
     } else if (orders.has(clordId)) {
       const o = orders.get(clordId);
       Object.assign(o, { statusText, statusClass, active, leavesQty });
+    } else if (execType === '2' || execType === '4') {
+      // Historical fill/cancel replayed on reconnect — no prior ExecType=0 exists
+      orderSeq++;
+      orders.set(clordId, { n: orderSeq, symbol, side, qty, price, leavesQty: 0,
+                             statusText, statusClass, active: false });
     }
 
     if (execType === '8') {
@@ -511,7 +521,7 @@
     document.getElementById('chart-sym').textContent = activeSym || '';
     if (!activeSym || !tradeHistory[activeSym]) { lineSeries.setData([]); return; }
     lineSeries.setData(tradeHistory[activeSym]);
-    chart.timeScale().scrollToRealTime();
+    chart.timeScale().fitContent();
   }
 
   function setupChart() {

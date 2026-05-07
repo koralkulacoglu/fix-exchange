@@ -5,6 +5,7 @@
 #include <quickfix/fix42/OrderCancelReplaceRequest.h>
 #include <quickfix/fix42/OrderCancelRequest.h>
 #include <quickfix/Fields.h>
+#include <ctime>
 #include <iostream>
 
 namespace gateway {
@@ -22,6 +23,31 @@ void FixGateway::restoreOrders(const std::vector<engine::Order>& orders, int max
         // order_sessions_ left empty — onLogon re-binds when clients reconnect
     }
     if (max_seq > 0) order_seq_.store(max_seq);
+}
+
+static FIX42::ExecutionReport make_historical_fill_report(
+    const persistence::PersistenceLayer::HistoricalFill& f)
+{
+    bool is_fill = (f.exec_type == '2');
+    FIX42::ExecutionReport msg(
+        FIX::OrderID(f.exchange_id),
+        FIX::ExecID(f.exchange_id + "-HIST"),
+        FIX::ExecTransType('0'),
+        FIX::ExecType(f.exec_type),
+        FIX::OrdStatus(f.exec_type),
+        FIX::Symbol(f.symbol),
+        FIX::Side(f.side),
+        FIX::LeavesQty(0),
+        FIX::CumQty(is_fill ? f.qty : 0),
+        FIX::AvgPx(is_fill ? f.price : 0.0)
+    );
+    msg.set(FIX::ClOrdID(f.clord_id));
+    msg.set(FIX::OrderQty(f.qty));
+    if (f.price > 0.0)
+        msg.set(FIX::Price(f.price));
+    if (is_fill)
+        msg.set(FIX::LastShares(f.qty));
+    return msg;
 }
 
 void FixGateway::onLogon(const FIX::SessionID& id) {
@@ -42,6 +68,12 @@ void FixGateway::onLogon(const FIX::SessionID& id) {
     for (const auto& order : client_orders) {
         auto msg = make_order_status_report(order);
         FIX::Session::sendToTarget(msg, id);
+    }
+    if (persistence_) {
+        for (const auto& f : persistence_->loadHistoricalFills(client_id)) {
+            auto report = make_historical_fill_report(f);
+            FIX::Session::sendToTarget(report, id);
+        }
     }
 }
 
@@ -237,6 +269,7 @@ void FixGateway::onCancel(const engine::CancelRequest& req, bool found) {
             persistence::PersistenceEvent evt;
             evt.type    = persistence::PersistenceEvent::CANCEL;
             evt.str_val = req.orig_order_id;
+            evt.order   = order;
             persistence_->push(std::move(evt));
         }
     }
@@ -276,10 +309,15 @@ void FixGateway::onFill(const engine::Fill& maker, const engine::Fill& taker) {
     send_fill(taker);
     publisher_.on_fill(maker);
     if (persistence_) {
-        persistence::PersistenceEvent evt;
-        evt.type = persistence::PersistenceEvent::FILL;
-        evt.fill = maker;
-        persistence_->push(std::move(evt));
+        persistence::PersistenceEvent maker_evt;
+        maker_evt.type = persistence::PersistenceEvent::FILL;
+        maker_evt.fill = maker;
+        persistence_->push(std::move(maker_evt));
+
+        persistence::PersistenceEvent taker_evt;
+        taker_evt.type = persistence::PersistenceEvent::TAKER_FILL;
+        taker_evt.fill = taker;
+        persistence_->push(std::move(taker_evt));
     }
 }
 
@@ -326,11 +364,28 @@ void FixGateway::onMessage(const FIX42::MarketDataRequest& msg,
     }
 
     engine_.requestSnapshot(
-        [req_id, session_id, requested](std::vector<engine::BookSnapshot> snaps) {
+        [this, req_id, session_id, requested](std::vector<engine::BookSnapshot> snaps) {
             for (const auto& snap : snaps) {
                 if (!requested.empty() && !requested.count(snap.symbol))
                     continue;
                 auto reply = make_md_snapshot(req_id, snap);
+                if (persistence_) {
+                    for (const auto& t : persistence_->loadHistoricalTrades(snap.symbol)) {
+                        FIX42::MarketDataSnapshotFullRefresh::NoMDEntries grp;
+                        grp.set(FIX::MDEntryType('2'));
+                        grp.set(FIX::MDEntryPx(t.price));
+                        grp.set(FIX::MDEntrySize(t.qty));
+                        time_t secs = t.ts / 1'000'000'000LL;
+                        struct tm utc {};
+                        gmtime_r(&secs, &utc);
+                        char date_buf[9], time_buf[9];
+                        strftime(date_buf, sizeof(date_buf), "%Y%m%d", &utc);
+                        strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &utc);
+                        grp.setField(272, date_buf);
+                        grp.setField(273, time_buf);
+                        reply.addGroup(grp);
+                    }
+                }
                 FIX::Session::sendToTarget(reply, session_id);
             }
         });

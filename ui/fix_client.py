@@ -48,6 +48,10 @@ def parse_fields(raw: bytes) -> dict:
                 cur["qty"] = int(float(val))
             elif tag == "278" and cur:
                 cur["eid"] = val
+            elif tag == "272" and cur:
+                cur["date"] = val
+            elif tag == "273" and cur:
+                cur["time"] = val
         if cur: entries.append(cur)
         fields["md_entries"] = entries
 
@@ -94,7 +98,7 @@ class AsyncFixSession:
         while True:
             try:
                 msg = await asyncio.wait_for(self.recv(), timeout=0.3)
-                if msg.get("35") == "8" and msg.get("150") == "I":
+                if msg.get("35") == "8" and msg.get("150") in ("I", "2", "4"):
                     self.order_statuses.append(msg)
             except asyncio.TimeoutError:
                 break

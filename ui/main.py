@@ -56,10 +56,15 @@ MD_SIZE = struct.calcsize(MD_FMT)
 # Shared state
 # ---------------------------------------------------------------------------
 
-order_book:  dict = {sym: {"bids": {}, "asks": {}} for sym in SYMBOLS}
-order_state: dict = {}  # exchange_id -> {price, qty, side, symbol}
-ws_clients:  set  = set()
-exec_log:    list = []  # all exec reports received this server lifetime
+order_book:    dict = {sym: {"bids": {}, "asks": {}} for sym in SYMBOLS}
+order_state:   dict = {}  # exchange_id -> {price, qty, side, symbol}
+trade_history: dict = {}  # symbol -> [{time: unix_seconds, value: price}]
+ws_clients:    set  = set()
+exec_log:      list = []  # all exec reports received this server lifetime
+
+# Startup token embedded in every ClOrdID so IDs are unique across server
+# restarts — prevents collisions with historical fills that share a recycled ID.
+_session_ts = int(datetime.datetime.now().timestamp())
 
 # FIX session — owned by the server, shared across all WebSocket connections
 fix:         AsyncFixSession | None = None
@@ -169,6 +174,11 @@ class MdProtocol(asyncio.DatagramProtocol):
         exchange_id = exch_b.rstrip(b"\x00").decode("ascii")
         is_new = symbol not in order_book
         _apply_md(evt, side, symbol, price, qty, exchange_id)
+        if side == ord('2'):  # trade — keep server-side history current for snapshot replay
+            hist = trade_history.setdefault(symbol, [])
+            t = int(datetime.datetime.now().timestamp())
+            last = hist[-1]["time"] if hist else 0
+            hist.append({"time": max(t, last + 1), "value": price})
         if is_new:
             sym_msg = json.dumps({"type": "symbols", "symbols": list(order_book.keys())})
             for ws in list(ws_clients):
@@ -194,6 +204,45 @@ def _book_snapshot() -> dict:
 # FIX reader — runs once for the server lifetime, fans out exec reports
 # ---------------------------------------------------------------------------
 
+def _process_md_snapshot(msg: dict):
+    symbol = msg.get("55", "")
+    if symbol not in order_book:
+        return
+    bids, asks = {}, {}
+    trades: list = []
+    for e in msg.get("md_entries", []):
+        p, q = e.get("price"), e.get("qty", 0)
+        if p is None or q <= 0:
+            continue
+        eid = e.get("eid")
+        if e["type"] == "0":
+            bids[p] = bids.get(p, 0) + q
+            if eid:
+                order_state[eid] = {"price": p, "qty": q, "symbol": symbol, "side": ord('0')}
+        elif e["type"] == "1":
+            asks[p] = asks.get(p, 0) + q
+            if eid:
+                order_state[eid] = {"price": p, "qty": q, "symbol": symbol, "side": ord('1')}
+        elif e["type"] == "2":
+            date_s = e.get("date", "")
+            time_s = e.get("time", "")
+            if date_s and time_s:
+                try:
+                    dt = datetime.datetime.strptime(date_s + time_s, "%Y%m%d%H:%M:%S")
+                    t = int(dt.timestamp())
+                    # Lightweight-charts requires strictly increasing timestamps.
+                    # Multiple fills in the same second get the same tag-272/273 value,
+                    # so enforce monotonicity the same way the live UDP path does.
+                    last = trades[-1]["time"] if trades else 0
+                    trades.append({"time": max(t, last + 1), "value": p})
+                except ValueError:
+                    pass
+    order_book[symbol]["bids"] = bids
+    order_book[symbol]["asks"] = asks
+    if trades:
+        trade_history[symbol] = trades
+
+
 async def _fix_reader():
     while True:
         msg = await fix.recv()
@@ -204,25 +253,8 @@ async def _fix_reader():
             text = json.dumps({"type": "exec", **msg})
             for ws in list(ws_clients):
                 asyncio.create_task(_safe_send(ws, text))
-        elif msg.get("35") == "W":  # MarketDataSnapshotFullRefresh — seed book
-            symbol = msg.get("55", "")
-            if symbol in order_book:
-                bids, asks = {}, {}
-                for e in msg.get("md_entries", []):
-                    p, q = e.get("price"), e.get("qty", 0)
-                    if p is None or q <= 0:
-                        continue
-                    eid = e.get("eid")
-                    if e["type"] == "0":
-                        bids[p] = bids.get(p, 0) + q
-                        if eid:
-                            order_state[eid] = {"price": p, "qty": q, "symbol": symbol, "side": ord('0')}
-                    elif e["type"] == "1":
-                        asks[p] = asks.get(p, 0) + q
-                        if eid:
-                            order_state[eid] = {"price": p, "qty": q, "symbol": symbol, "side": ord('1')}
-                order_book[symbol]["bids"] = bids
-                order_book[symbol]["asks"] = asks
+        elif msg.get("35") == "W":
+            _process_md_snapshot(msg)
 
 # ---------------------------------------------------------------------------
 # Lifespan: claim FIX session, bind UDP multicast socket
@@ -240,7 +272,8 @@ async def lifespan(app: FastAPI):
     await fix.logon()
     exec_log.extend(fix.order_statuses)
 
-    # Seed order book with a full snapshot from the exchange before going live
+    # Seed order book and trade_history synchronously before yielding so the
+    # first WebSocket connection already has complete chart data.
     syms = list(order_book.keys())
     if syms:
         md_body = [
@@ -249,6 +282,17 @@ async def lifespan(app: FastAPI):
             ("146", str(len(syms))),
         ] + [("55", s) for s in syms]
         await fix.send("V", md_body)
+        pending = set(syms)
+        while pending:
+            try:
+                msg = await asyncio.wait_for(fix.recv(), timeout=5.0)
+            except asyncio.TimeoutError:
+                break
+            if msg.get("35") == "W":
+                _process_md_snapshot(msg)
+                pending.discard(msg.get("55", ""))
+            elif msg.get("35") == "1":
+                await fix.send("0", {"112": msg.get("112", "")})
 
     asyncio.create_task(_fix_reader())
 
@@ -302,6 +346,7 @@ async def websocket_endpoint(ws: WebSocket):
                  "price": s["price"], "qty": s["qty"]}
                 for eid, s in order_state.items()
             ],
+            "trade_history": trade_history,
         }))
 
         # Read orders from browser and forward to exchange via shared FIX session
@@ -311,7 +356,7 @@ async def websocket_endpoint(ws: WebSocket):
             ts = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%d-%H:%M:%S")
             if data["type"] == "new_order":
                 seq_counter[0] += 1
-                clord_id = f"{comp_id}-{seq_counter[0]}"
+                clord_id = f"{comp_id}-{_session_ts}-{seq_counter[0]}"
                 await fix.send("D", {
                     "11": clord_id,
                     "21": "1",
@@ -326,7 +371,7 @@ async def websocket_endpoint(ws: WebSocket):
                 seq_counter[0] += 1
                 await fix.send("F", {
                     "41": data["orig_clord_id"],
-                    "11": f"{comp_id}-{seq_counter[0]}",
+                    "11": f"{comp_id}-{_session_ts}-{seq_counter[0]}",
                     "55": data["symbol"],
                     "54": "1" if data["side"] == "buy" else "2",
                     "38": str(data["qty"]),

@@ -189,15 +189,33 @@ void PersistenceLayer::applyEvent(const PersistenceEvent& evt) {
         sqlite3_step(s); sqlite3_finalize(s); s = nullptr;
 
         sqlite3_prepare_v2(db_,
-            "INSERT INTO events(ts,type,exchange_id,client_id,symbol,side,price,qty,leaves_qty)"
-            " VALUES(?,?,?,?,?,?,?,?,?)", -1, &s, nullptr);
+            "INSERT INTO events(ts,type,exchange_id,clord_id,client_id,symbol,side,price,qty,leaves_qty)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)", -1, &s, nullptr);
         sqlite3_bind_int64(s,1,ts);
         sqlite3_bind_text(s,2,"fill",-1,SQLITE_STATIC);
-        bind_text(s,3,f.exchange_id); bind_text(s,4,f.client_id);
-        bind_text(s,5,f.symbol);      bind_char(s,6,f.side);
-        sqlite3_bind_double(s,7,f.price);
-        sqlite3_bind_int(s,8,f.qty);
-        sqlite3_bind_int(s,9,f.leaves_qty);
+        bind_text(s,3,f.exchange_id); bind_text(s,4,f.clord_id);
+        bind_text(s,5,f.client_id);   bind_text(s,6,f.symbol);
+        bind_char(s,7,f.side);
+        sqlite3_bind_double(s,8,f.price);
+        sqlite3_bind_int(s,9,f.qty);
+        sqlite3_bind_int(s,10,f.leaves_qty);
+        sqlite3_step(s); sqlite3_finalize(s);
+        break;
+    }
+
+    case PersistenceEvent::TAKER_FILL: {
+        const auto& f = evt.fill;
+        sqlite3_prepare_v2(db_,
+            "INSERT INTO events(ts,type,exchange_id,clord_id,client_id,symbol,side,price,qty,leaves_qty)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)", -1, &s, nullptr);
+        sqlite3_bind_int64(s,1,ts);
+        sqlite3_bind_text(s,2,"taker_fill",-1,SQLITE_STATIC);
+        bind_text(s,3,f.exchange_id); bind_text(s,4,f.clord_id);
+        bind_text(s,5,f.client_id);   bind_text(s,6,f.symbol);
+        bind_char(s,7,f.side);
+        sqlite3_bind_double(s,8,f.price);
+        sqlite3_bind_int(s,9,f.qty);
+        sqlite3_bind_int(s,10,f.leaves_qty);
         sqlite3_step(s); sqlite3_finalize(s);
         break;
     }
@@ -209,12 +227,18 @@ void PersistenceLayer::applyEvent(const PersistenceEvent& evt) {
         bind_text(s,1,evt.str_val);
         sqlite3_step(s); sqlite3_finalize(s); s = nullptr;
 
+        const auto& o = evt.order;
         sqlite3_prepare_v2(db_,
-            "INSERT INTO events(ts,type,exchange_id) VALUES(?,?,?)",
-            -1, &s, nullptr);
+            "INSERT INTO events(ts,type,exchange_id,clord_id,client_id,symbol,side,price,qty,leaves_qty)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)", -1, &s, nullptr);
         sqlite3_bind_int64(s,1,ts);
         sqlite3_bind_text(s,2,"cancel",-1,SQLITE_STATIC);
-        bind_text(s,3,evt.str_val);
+        bind_text(s,3,evt.str_val); bind_text(s,4,o.clord_id);
+        bind_text(s,5,o.client_id); bind_text(s,6,o.symbol);
+        bind_char(s,7,o.side);
+        sqlite3_bind_double(s,8,o.price);
+        sqlite3_bind_int(s,9,o.qty);
+        sqlite3_bind_int(s,10,0);
         sqlite3_step(s); sqlite3_finalize(s);
         break;
     }
@@ -311,6 +335,63 @@ int PersistenceLayer::loadMaxOrderSeq() {
     if (sqlite3_step(s) == SQLITE_ROW &&
         sqlite3_column_type(s, 0) != SQLITE_NULL)
         result = sqlite3_column_int(s, 0);
+    sqlite3_finalize(s);
+    return result;
+}
+
+std::vector<PersistenceLayer::HistoricalFill>
+PersistenceLayer::loadHistoricalFills(const std::string& client_id) {
+    std::vector<HistoricalFill> result;
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db_,
+        "SELECT CASE WHEN type='cancel' THEN '4' ELSE '2' END,"
+        "       exchange_id, clord_id, symbol, side, price, qty, ts"
+        " FROM events"
+        " WHERE type IN ('fill','taker_fill','cancel')"
+        "   AND client_id = ?"
+        "   AND leaves_qty = 0"
+        "   AND clord_id IS NOT NULL AND clord_id != ''"
+        " ORDER BY seq ASC",
+        -1, &s, nullptr);
+    bind_text(s, 1, client_id);
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        HistoricalFill f;
+        const char* et = reinterpret_cast<const char*>(sqlite3_column_text(s, 0));
+        f.exec_type   = et ? et[0] : '2';
+        f.exchange_id = reinterpret_cast<const char*>(sqlite3_column_text(s, 1));
+        f.clord_id    = reinterpret_cast<const char*>(sqlite3_column_text(s, 2));
+        f.symbol      = reinterpret_cast<const char*>(sqlite3_column_text(s, 3));
+        const char* side = reinterpret_cast<const char*>(sqlite3_column_text(s, 4));
+        f.side  = side ? side[0] : '1';
+        f.price = sqlite3_column_double(s, 5);
+        f.qty   = sqlite3_column_int(s, 6);
+        f.ts    = sqlite3_column_int64(s, 7);
+        result.push_back(std::move(f));
+    }
+    sqlite3_finalize(s);
+    return result;
+}
+
+std::vector<PersistenceLayer::HistoricalTrade>
+PersistenceLayer::loadHistoricalTrades(const std::string& symbol, int limit) {
+    std::vector<HistoricalTrade> result;
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db_,
+        "SELECT price, qty, ts FROM ("
+        "  SELECT price, qty, ts FROM events"
+        "  WHERE type = 'fill' AND symbol = ?"
+        "  ORDER BY seq DESC LIMIT ?"
+        ") ORDER BY ts ASC",
+        -1, &s, nullptr);
+    bind_text(s, 1, symbol);
+    sqlite3_bind_int(s, 2, limit);
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        HistoricalTrade t;
+        t.price = sqlite3_column_double(s, 0);
+        t.qty   = sqlite3_column_int(s, 1);
+        t.ts    = sqlite3_column_int64(s, 2);
+        result.push_back(t);
+    }
     sqlite3_finalize(s);
     return result;
 }
