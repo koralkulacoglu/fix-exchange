@@ -58,7 +58,7 @@ MD_SIZE = struct.calcsize(MD_FMT)
 
 order_book:    dict = {sym: {"bids": {}, "asks": {}} for sym in SYMBOLS}
 order_state:   dict = {}  # exchange_id -> {price, qty, side, symbol}
-trade_history: dict = {}  # symbol -> [{time: unix_seconds, value: price}]
+trade_history: dict = {}  # symbol -> [{time: unix seconds (float, ms precision), value: price}]
 ws_clients:    set  = set()
 exec_log:      list = []  # all exec reports received this server lifetime
 
@@ -176,9 +176,9 @@ class MdProtocol(asyncio.DatagramProtocol):
         _apply_md(evt, side, symbol, price, qty, exchange_id)
         if side == ord('2'):  # trade — keep server-side history current for snapshot replay
             hist = trade_history.setdefault(symbol, [])
-            t = int(datetime.datetime.now().timestamp())
+            t = datetime.datetime.now().timestamp()
             last = hist[-1]["time"] if hist else 0
-            hist.append({"time": max(t, last + 1), "value": price})
+            hist.append({"time": max(t, last + 0.001), "value": price})
         if is_new:
             sym_msg = json.dumps({"type": "symbols", "symbols": list(order_book.keys())})
             for ws in list(ws_clients):
@@ -228,13 +228,13 @@ def _process_md_snapshot(msg: dict):
             time_s = e.get("time", "")
             if date_s and time_s:
                 try:
-                    dt = datetime.datetime.strptime(date_s + time_s, "%Y%m%d%H:%M:%S")
-                    t = int(dt.timestamp())
+                    dt = datetime.datetime.strptime(date_s + time_s, "%Y%m%d%H:%M:%S.%f")
+                    t = dt.timestamp()
                     # Lightweight-charts requires strictly increasing timestamps.
-                    # Multiple fills in the same second get the same tag-272/273 value,
-                    # so enforce monotonicity the same way the live UDP path does.
+                    # Fills within the same millisecond get the same tag-273 value,
+                    # so enforce monotonicity with a 1 ms bump.
                     last = trades[-1]["time"] if trades else 0
-                    trades.append({"time": max(t, last + 1), "value": p})
+                    trades.append({"time": max(t, last + 0.001), "value": p})
                 except ValueError:
                     pass
     order_book[symbol]["bids"] = bids

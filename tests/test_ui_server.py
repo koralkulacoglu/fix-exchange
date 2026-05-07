@@ -370,9 +370,9 @@ def test_clordid_session_token_changes_on_restart():
 def test_snapshot_trade_timestamps_strictly_increasing():
     """trade_history timestamps must be strictly increasing — no two fills share a timestamp.
 
-    _process_md_snapshot applies a monotonic guarantee because the DB stores
-    timestamps at second resolution, so rapid fills would otherwise produce
-    duplicate timestamps that lightweight-charts silently deduplicates.
+    _process_md_snapshot applies a monotonic guarantee with 1 ms granularity.
+    Fills within the same millisecond (essentially impossible in practice) still
+    get a bump, but the distortion is negligible.
     """
     async def _run():
         async with websockets.connect(UI_URL) as ws:

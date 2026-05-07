@@ -257,7 +257,7 @@
   let trades       = [];
   let orderSeq     = 0;
   let tradeHistory = {};  // symbol -> [{time, value}]
-  let lastTradeTime = {};  // symbol -> last unix second used (monotonic guarantee)
+  let lastTradeTime = {};  // symbol -> last unix timestamp used (float seconds, ms precision; monotonic guarantee)
   let chart = null;
   let lineSeries = null;
 
@@ -510,9 +510,9 @@
   }
 
   function nextTradeTime(symbol) {
-    const t = Math.floor(Date.now() / 1000);
+    const t    = Date.now() / 1000;
     const last = lastTradeTime[symbol] || 0;
-    const next = Math.max(t, last + 1);
+    const next = Math.max(t, last + 0.001);
     lastTradeTime[symbol] = next;
     return next;
   }

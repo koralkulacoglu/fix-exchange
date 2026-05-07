@@ -376,11 +376,13 @@ void FixGateway::onMessage(const FIX42::MarketDataRequest& msg,
                         grp.set(FIX::MDEntryPx(t.price));
                         grp.set(FIX::MDEntrySize(t.qty));
                         time_t secs = t.ts / 1'000'000'000LL;
+                        int    ms   = (t.ts % 1'000'000'000LL) / 1'000'000LL;
                         struct tm utc {};
                         gmtime_r(&secs, &utc);
-                        char date_buf[9], time_buf[9];
+                        char date_buf[9], time_buf[13];
                         strftime(date_buf, sizeof(date_buf), "%Y%m%d", &utc);
-                        strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &utc);
+                        snprintf(time_buf, sizeof(time_buf), "%02d:%02d:%02d.%03d",
+                                 utc.tm_hour, utc.tm_min, utc.tm_sec, ms);
                         grp.setField(272, date_buf);
                         grp.setField(273, time_buf);
                         reply.addGroup(grp);
