@@ -1,6 +1,6 @@
 # FIX Exchange
 
-A single-process equity exchange written in C++. Clients connect over TCP using the FIX 4.2 protocol to submit orders and receive execution reports. Market data is broadcast over UDP multicast as binary packets. A price-time priority matching engine runs on a dedicated thread. Resting orders, fills, cancels, and runtime symbol registrations are persisted to SQLite so the book survives restarts and crashes.
+A single-process equity exchange written in C++. Clients connect over TCP using the FIX 4.2 protocol to submit orders and receive execution reports. Market data is broadcast over UDP multicast as binary packets. A price-time priority matching engine runs on a dedicated thread. Resting orders, fills, cancels, and runtime symbol registrations are persisted to SQLite so the book survives restarts and crashes. Pre-trade risk controls are enforced before orders reach the matching engine.
 
 ![Trading UI](docs/screenshots/ui.png)
 
@@ -127,7 +127,7 @@ The binary must be built first. Tests connect over raw TCP on port 5001 using ha
 
 ## Configuration
 
-The config file is a QuickFIX acceptor config extended with an `[EXCHANGE]` section. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for a full reference.
+The config file is a QuickFIX acceptor config extended with `[EXCHANGE]` and `[RISK]` sections. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for a full reference.
 
 Key settings in `config/exchange.cfg`:
 

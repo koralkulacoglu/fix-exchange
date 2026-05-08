@@ -2,6 +2,7 @@
 #include "engine/MatchingEngine.h"
 #include "engine/Order.h"
 #include "persistence/PersistenceLayer.h"
+#include "risk/RiskEngine.h"
 #include <quickfix/Application.h>
 #include <quickfix/MessageCracker.h>
 #include <quickfix/Session.h>
@@ -25,7 +26,8 @@ class FixGateway : public FIX::Application, public FIX::MessageCracker {
 public:
     FixGateway(engine::MatchingEngine& engine,
                market_data::MarketDataPublisher& publisher,
-               persistence::PersistenceLayer* persistence = nullptr);
+               persistence::PersistenceLayer* persistence = nullptr,
+               risk::RiskConfig risk_cfg = {});
 
     // Restore resting orders from DB into gateway maps before engine.start().
     // Sets order_seq_ to max_seq so new IDs don't collide with restored ones.
@@ -60,6 +62,7 @@ private:
     engine::MatchingEngine& engine_;
     market_data::MarketDataPublisher& publisher_;
     persistence::PersistenceLayer* persistence_;
+    risk::RiskEngine risk_;
 
     std::atomic<int> order_seq_{0};
 

@@ -55,6 +55,17 @@ The `[EXCHANGE]` section is not a standard QuickFIX section — it is parsed man
 | `SessionPool` | `8` | `0` | Number of additional FIX session slots to pre-allocate at startup (named `S1`–`SN`). Clients claim a slot via `CLAIM-SESSION` on the admin gateway before connecting. `0` disables the pool. |
 | `DatabasePath` | `store/exchange.db` | *(disabled)* | Path to the SQLite database file used for persistence. If set, resting orders, fills, cancels, and runtime symbol registrations are recorded. On restart the book is restored from this file. Omit to run without persistence (all state is lost on crash). The directory must exist; the file is created if absent. |
 
+---
+
+## [RISK] Settings
+
+The optional `[RISK]` section configures global pre-trade risk controls. All checks are applied in `FixGateway` before an order is submitted to the matching engine. A rejected order receives `ExecutionReport(ExecType=Rejected)` with the reason in tag 58. All limits default to `0` / `0.0` (disabled).
+
+| Key | Example | Default | Description |
+|-----|---------|---------|-------------|
+| `MaxOrderQty` | `10000` | `0` | Maximum order quantity. Orders with `OrderQty` greater than this value are rejected. `0` disables the check. |
+| `PriceCollarPct` | `5.0` | `0.0` | Directional price collar for limit orders. A buy order whose price exceeds the last trade price by more than N% is rejected; a sell order whose price is more than N% below the last trade price is rejected. The check is skipped if no trade has occurred yet for that symbol. `0.0` disables the check. |
+
 ### Admin gateway
 
 The admin gateway listens on `AdminPort` and accepts plain-text commands over TCP. Each command is a single line terminated by `\n`; the exchange replies with a single line. See [docs/MESSAGES.md](MESSAGES.md) for the full admin command reference.
@@ -103,4 +114,8 @@ AdminPort=5002
 MulticastGroup=239.1.1.1
 MulticastPort=5003
 SessionPool=8
+
+[RISK]
+MaxOrderQty=10000
+PriceCollarPct=5.0
 ```

@@ -3,6 +3,7 @@
 #include "gateway/FixGateway.h"
 #include "market_data/MarketDataPublisher.h"
 #include "persistence/PersistenceLayer.h"
+#include "risk/RiskEngine.h"
 
 #include <quickfix/FileLog.h>
 #include <quickfix/FileStore.h>
@@ -21,13 +22,15 @@
 
 static volatile std::sig_atomic_t g_stop = 0;
 
-// Parse a simple ini file for [EXCHANGE] section values.
-static std::string read_exchange_value(const std::string& path, const std::string& key) {
+// Parse a simple ini file for a named section's key.
+static std::string read_cfg_value(const std::string& path,
+                                   const std::string& section,
+                                   const std::string& key) {
     std::ifstream f(path);
     bool in_section = false;
     std::string line;
     while (std::getline(f, line)) {
-        if (line == "[EXCHANGE]") { in_section = true; continue; }
+        if (line == section) { in_section = true; continue; }
         if (!line.empty() && line[0] == '[') { in_section = false; continue; }
         if (!in_section) continue;
         auto eq = line.find('=');
@@ -36,6 +39,10 @@ static std::string read_exchange_value(const std::string& path, const std::strin
             return line.substr(eq + 1);
     }
     return {};
+}
+
+static std::string read_exchange_value(const std::string& path, const std::string& key) {
+    return read_cfg_value(path, "[EXCHANGE]", key);
 }
 
 static std::vector<std::string> parse_symbols(const std::string& path) {
@@ -98,7 +105,13 @@ int main(int argc, char* argv[]) {
             symbols
         );
 
-        gateway::FixGateway gateway(engine, publisher, persistence.get());
+        risk::RiskConfig risk_cfg;
+        auto mqo = read_cfg_value(config_path, "[RISK]", "MaxOrderQty");
+        if (!mqo.empty()) risk_cfg.max_order_qty = std::stoi(mqo);
+        auto pcp = read_cfg_value(config_path, "[RISK]", "PriceCollarPct");
+        if (!pcp.empty()) risk_cfg.price_collar_pct = std::stod(pcp);
+
+        gateway::FixGateway gateway(engine, publisher, persistence.get(), risk_cfg);
         gw_ptr = &gateway;
 
         FIX::SessionSettings settings(argv[1]);

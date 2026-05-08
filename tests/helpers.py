@@ -46,10 +46,10 @@ _proc = None
 # Exchange lifecycle
 # ---------------------------------------------------------------------------
 
-def start_exchange():
+def start_exchange(cfg=EXCHANGE_CFG):
     global _proc
     proc = subprocess.Popen(
-        [EXCHANGE_BIN, EXCHANGE_CFG],
+        [EXCHANGE_BIN, cfg],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -80,6 +80,7 @@ def restart_exchange():
         _proc = None
     time.sleep(0.2)
     start_exchange()
+
 
 
 # ---------------------------------------------------------------------------

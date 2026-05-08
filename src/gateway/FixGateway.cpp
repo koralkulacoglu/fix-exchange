@@ -5,15 +5,19 @@
 #include <quickfix/fix42/OrderCancelReplaceRequest.h>
 #include <quickfix/fix42/OrderCancelRequest.h>
 #include <quickfix/Fields.h>
+#include <cmath>
 #include <ctime>
 #include <iostream>
+#include <limits>
 
 namespace gateway {
 
 FixGateway::FixGateway(engine::MatchingEngine& engine,
                        market_data::MarketDataPublisher& publisher,
-                       persistence::PersistenceLayer* persistence)
-    : engine_(engine), publisher_(publisher), persistence_(persistence) {}
+                       persistence::PersistenceLayer* persistence,
+                       risk::RiskConfig risk_cfg)
+    : engine_(engine), publisher_(publisher), persistence_(persistence),
+      risk_(risk_cfg) {}
 
 void FixGateway::restoreOrders(const std::vector<engine::Order>& orders, int max_seq) {
     std::lock_guard<std::mutex> lock(orders_mutex_);
@@ -97,17 +101,33 @@ void FixGateway::onMessage(const FIX42::NewOrderSingle& msg, const FIX::SessionI
     FIX::OrdType  ordType;  msg.get(ordType);
     FIX::OrderQty orderQty; msg.get(orderQty);
 
+    double raw_qty = orderQty.getValue();
     order.clord_id    = clOrdID.getValue();
     order.exchange_id = "EXCH-" + std::to_string(++order_seq_);
     order.symbol      = symbol.getValue();
     order.side        = side.getValue();
     order.type        = ordType.getValue();
-    order.qty         = static_cast<int>(orderQty.getValue());
-    order.leaves_qty  = order.qty;
+
+    if (raw_qty <= 0 || raw_qty > std::numeric_limits<int>::max()) {
+        auto reject = make_exec_report(order, ExecType::Rejected);
+        reject.set(FIX::Text("Invalid order qty"));
+        FIX::Session::sendToTarget(reject, session_id);
+        return;
+    }
+
+    order.qty        = static_cast<int>(raw_qty);
+    order.leaves_qty = order.qty;
 
     if (order.type == '2') {
         FIX::Price price; msg.get(price);
-        order.price = price.getValue();
+        double p = price.getValue();
+        if (p <= 0.0 || !std::isfinite(p)) {
+            auto reject = make_exec_report(order, ExecType::Rejected);
+            reject.set(FIX::Text("Invalid price"));
+            FIX::Session::sendToTarget(reject, session_id);
+            return;
+        }
+        order.price = p;
     } else {
         order.price = 0.0;
     }
@@ -121,6 +141,14 @@ void FixGateway::onMessage(const FIX42::NewOrderSingle& msg, const FIX::SessionI
     if (!engine_.isValidSymbol(order.symbol)) {
         auto reject = make_exec_report(order, ExecType::Rejected);
         reject.set(FIX::Text("Unknown symbol"));
+        FIX::Session::sendToTarget(reject, session_id);
+        return;
+    }
+
+    auto risk_reason = risk_.check(order.symbol, order.type, order.side, order.qty, order.price);
+    if (!risk_reason.empty()) {
+        auto reject = make_exec_report(order, ExecType::Rejected);
+        reject.set(FIX::Text(risk_reason));
         FIX::Session::sendToTarget(reject, session_id);
         return;
     }
@@ -307,6 +335,7 @@ void FixGateway::onFill(const engine::Fill& maker, const engine::Fill& taker) {
 
     send_fill(maker);
     send_fill(taker);
+    risk_.on_trade(maker.symbol, maker.price);
     publisher_.on_fill(maker);
     if (persistence_) {
         persistence::PersistenceEvent maker_evt;

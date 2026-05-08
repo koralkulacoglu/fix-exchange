@@ -24,6 +24,7 @@ import test_replace
 import test_market_data
 import test_persistence
 import test_ui_server
+import test_risk
 
 MODULES = [
     # test_orders must precede test_session: the multiclient session test
@@ -35,6 +36,7 @@ MODULES = [
     test_market_data,
     test_persistence,
     test_ui_server,
+    test_risk,
 ]
 
 PASS = "\033[32mPASS\033[0m"

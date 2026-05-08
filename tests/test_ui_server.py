@@ -390,6 +390,23 @@ def test_snapshot_trade_timestamps_strictly_increasing():
         asyncio.run(_run())
 
 
+def test_risk_rejection_via_websocket():
+    """Orders that breach risk limits are rejected and the reason appears on the WebSocket."""
+    async def _run():
+        async with websockets.connect(UI_URL) as ws:
+            await ws_recv_until(ws, lambda m: m["type"] == "snapshot")
+            await ws.send(json.dumps({
+                "type": "new_order", "symbol": "AMZN",
+                "side": "buy", "price": 150.00, "qty": 10001,
+            }))
+            rej = await ws_recv_until(ws, is_exec("8"))
+            assert "exceeds max" in rej.get("58", ""), \
+                f"Expected risk rejection reason in tag 58, got {rej.get('58')}"
+
+    with ui_server_ctx():
+        asyncio.run(_run())
+
+
 TESTS = [
     ("UI → snapshot includes trade history from DB",                        test_snapshot_trade_history),
     ("UI → exec_log replayed to new WebSocket client",                      test_blotter_exec_replay),
@@ -401,6 +418,7 @@ TESTS = [
     ("UI → resting order present in exec_log replay on page reload",         test_resting_order_in_exec_replay),
     ("UI → ClOrdID session token changes across server restarts",            test_clordid_session_token_changes_on_restart),
     ("UI → trade_history timestamps strictly increasing in snapshot",        test_snapshot_trade_timestamps_strictly_increasing),
+    ("UI → risk rejection surfaces on WebSocket with reason",               test_risk_rejection_via_websocket),
 ]
 
 
