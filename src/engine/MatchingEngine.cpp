@@ -52,11 +52,8 @@ void MatchingEngine::start() {
 }
 
 void MatchingEngine::stop() {
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        stop_ = true;
-    }
-    cv_.notify_one();
+    stop_.store(true, std::memory_order_release);
+    idle_cv_.notify_one();
     if (thread_.joinable())
         thread_.join();
 }
@@ -65,55 +62,50 @@ void MatchingEngine::submit(Order order) {
     WorkItem item;
     item.tag   = WorkItem::ORDER;
     item.order = std::move(order);
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        queue_.push(std::move(item));
-    }
-    cv_.notify_one();
+    while (!queue_.push(std::move(item)))
+        std::this_thread::yield();
+    idle_cv_.notify_one();
 }
 
 void MatchingEngine::requestSnapshot(SnapshotCallback cb) {
     WorkItem item;
     item.tag         = WorkItem::SNAPSHOT;
     item.snapshot_cb = std::move(cb);
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        queue_.push(std::move(item));
-    }
-    cv_.notify_one();
+    while (!queue_.push(std::move(item)))
+        std::this_thread::yield();
+    idle_cv_.notify_one();
 }
 
 void MatchingEngine::replace(ReplaceRequest req) {
     WorkItem item;
     item.tag         = WorkItem::REPLACE;
     item.replace_req = std::move(req);
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        queue_.push(std::move(item));
-    }
-    cv_.notify_one();
+    while (!queue_.push(std::move(item)))
+        std::this_thread::yield();
+    idle_cv_.notify_one();
 }
 
 void MatchingEngine::cancel(CancelRequest req) {
     WorkItem item;
     item.tag        = WorkItem::CANCEL;
     item.cancel_req = std::move(req);
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        queue_.push(std::move(item));
-    }
-    cv_.notify_one();
+    while (!queue_.push(std::move(item)))
+        std::this_thread::yield();
+    idle_cv_.notify_one();
 }
 
 void MatchingEngine::run() {
     while (true) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this]{ return stop_ || !queue_.empty(); });
-        if (stop_ && queue_.empty()) break;
+        WorkItem item;
+        if (!queue_.pop(item)) {
+            std::unique_lock<std::mutex> lock(idle_mutex_);
+            idle_cv_.wait(lock, [this] {
+                return stop_.load(std::memory_order_acquire) || !queue_.empty();
+            });
+            if (stop_.load(std::memory_order_acquire) && queue_.empty()) break;
+            continue;
+        }
 
-        WorkItem item = std::move(queue_.front());
-        queue_.pop();
-        lock.unlock();
         auto dequeue_ns = std::chrono::steady_clock::now().time_since_epoch().count();
 
         if (item.tag == WorkItem::ORDER) {

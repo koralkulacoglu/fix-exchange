@@ -1,10 +1,11 @@
 #pragma once
 #include "Order.h"
 #include "OrderBook.h"
+#include "RingBuffer.h"
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
-#include <queue>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -53,6 +54,7 @@ private:
         ReplaceRequest replace_req;
         SnapshotCallback snapshot_cb;
     };
+    static constexpr size_t kQueueSize = 4096;
 
     void run();
     OrderBook& book_for(const std::string& symbol);
@@ -67,10 +69,10 @@ private:
     mutable std::mutex symbols_mutex_;
     std::unordered_set<std::string> valid_symbols_;
 
-    std::queue<WorkItem> queue_;
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    bool stop_{false};
+    RingBuffer<WorkItem, kQueueSize> queue_;
+    std::mutex idle_mutex_;
+    std::condition_variable idle_cv_;
+    std::atomic<bool> stop_{false};
     std::thread thread_;
 };
 

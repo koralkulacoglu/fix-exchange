@@ -57,11 +57,11 @@ flowchart TD
 Four threads, fixed topology:
 
 - **QuickFIX thread** — runs the FIX acceptor, calls `FixGateway` callbacks (`onLogon`, `onMessage`, etc.)
-- **Engine thread** — the only thread that reads or writes order book state; `MatchingEngine::run()` drains a `std::queue<WorkItem>` via `std::mutex + std::condition_variable`
+- **Engine thread** — the only thread that reads or writes order book state; `MatchingEngine::run()` drains a `RingBuffer<WorkItem, 4096>` (SPSC lock-free ring buffer); idles on `idle_cv_` when the queue is empty
 - **Admin thread** — `AdminGateway` accepts plain-TCP connections and calls `MatchingEngine::registerSymbol()`
 - **Persistence thread** — `PersistenceLayer::run()` drains a `std::queue<PersistenceEvent>` every 5 ms and flushes each batch to SQLite in a single transaction
 
-`FixGateway` submits work to the engine via `engine_.submit()` / `engine_.cancel()` / `engine_.replace()`, all of which lock the work queue. Fill and cancel callbacks are invoked on the engine thread and must be thread-safe.
+`FixGateway` submits work to the engine via `engine_.submit()` / `engine_.cancel()` / `engine_.replace()`, all of which push onto the lock-free work queue. Fill and cancel callbacks are invoked on the engine thread and must be thread-safe.
 
 `MarketDataPublisher` holds a single UDP multicast socket and an atomic sequence counter. It is called exclusively from the engine thread (fill/cancel/replace/rested callbacks), so no mutex is needed.
 
