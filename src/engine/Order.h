@@ -15,12 +15,16 @@ struct Order {
     int qty;
     int leaves_qty;
     char tif{'0'};             // '0'=GTC (default), '3'=IOC, '4'=FOK (FIX tag 59)
+    int64_t arrival_ns{0};    // steady_clock ns at FixGateway::onMessage() entry
+    int64_t dequeue_ns{0};    // steady_clock ns when engine thread dequeues the order
 };
 
 struct CancelRequest {
     std::string orig_order_id; // exchange_id of the order to cancel (resolved by gateway)
     std::string client_id;
     std::string symbol;
+    int64_t arrival_ns{0};    // steady_clock ns at FixGateway::onMessage(OrderCancelRequest) entry
+    int64_t dequeue_ns{0};    // steady_clock ns when engine thread dequeues the request
 };
 
 struct ReplaceRequest {
@@ -44,6 +48,8 @@ struct Fill {
     double price;
     int qty;
     int leaves_qty;
+    int64_t arrival_ns{0};    // copied from Order::arrival_ns (taker only; 0 for maker)
+    int64_t dequeue_ns{0};    // copied from Order::dequeue_ns (taker only; 0 for maker)
 };
 
 struct BookLevel {

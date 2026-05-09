@@ -5,6 +5,7 @@
 #include <quickfix/fix42/OrderCancelReplaceRequest.h>
 #include <quickfix/fix42/OrderCancelRequest.h>
 #include <quickfix/Fields.h>
+#include <chrono>
 #include <cmath>
 #include <ctime>
 #include <iostream>
@@ -92,6 +93,7 @@ void FixGateway::fromApp(const FIX::Message& msg, const FIX::SessionID& id)
 }
 
 void FixGateway::onMessage(const FIX42::NewOrderSingle& msg, const FIX::SessionID& session_id) {
+    const int64_t arrival_ns = std::chrono::steady_clock::now().time_since_epoch().count();
     engine::Order order;
     order.client_id = session_id.getTargetCompID().getValue();
 
@@ -153,6 +155,8 @@ void FixGateway::onMessage(const FIX42::NewOrderSingle& msg, const FIX::SessionI
         return;
     }
 
+    order.arrival_ns = arrival_ns;
+
     {
         std::lock_guard<std::mutex> lock(orders_mutex_);
         order_sessions_.emplace(order.exchange_id, session_id);
@@ -162,13 +166,17 @@ void FixGateway::onMessage(const FIX42::NewOrderSingle& msg, const FIX::SessionI
 
     auto ack = make_exec_report(order, ExecType::New);
     FIX::Session::sendToTarget(ack, session_id);
+    ack_stats_.record(
+        std::chrono::steady_clock::now().time_since_epoch().count() - arrival_ns,
+        0);  // ack is sent before engine_.submit(), so queue_wait is 0
 
     engine_.submit(std::move(order));
 }
 
 void FixGateway::onMessage(const FIX42::OrderCancelRequest& msg, const FIX::SessionID& session_id) {
     engine::CancelRequest req;
-    req.client_id = session_id.getTargetCompID().getValue();
+    req.arrival_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+    req.client_id  = session_id.getTargetCompID().getValue();
 
     FIX::OrigClOrdID origClOrdID; msg.get(origClOrdID);
     FIX::Symbol      symbol;      msg.get(symbol);
@@ -292,6 +300,10 @@ void FixGateway::onCancel(const engine::CancelRequest& req, bool found) {
     if (found) {
         auto report = make_exec_report(order, ExecType::Canceled);
         FIX::Session::sendToTarget(report, session_id);
+        if (req.arrival_ns > 0)
+            cancel_stats_.record(
+                std::chrono::steady_clock::now().time_since_epoch().count() - req.arrival_ns,
+                req.dequeue_ns - req.arrival_ns);
         publisher_.on_cancel(order);
         if (persistence_) {
             persistence::PersistenceEvent evt;
@@ -335,6 +347,10 @@ void FixGateway::onFill(const engine::Fill& maker, const engine::Fill& taker) {
 
     send_fill(maker);
     send_fill(taker);
+    if (taker.arrival_ns > 0) {
+        const int64_t now = std::chrono::steady_clock::now().time_since_epoch().count();
+        fill_stats_.record(now - taker.arrival_ns, taker.dequeue_ns - taker.arrival_ns);
+    }
     risk_.on_trade(maker.symbol, maker.price);
     publisher_.on_fill(maker);
     if (persistence_) {
@@ -420,6 +436,21 @@ void FixGateway::onMessage(const FIX42::MarketDataRequest& msg,
                 FIX::Session::sendToTarget(reply, session_id);
             }
         });
+}
+
+std::string FixGateway::get_stats() const {
+    std::string out;
+    out += ack_stats_.serialize("ACK");
+    out += cancel_stats_.serialize("CANCEL");
+    out += fill_stats_.serialize("FILL");
+    out += "END\n";
+    return out;
+}
+
+void FixGateway::reset_stats() {
+    ack_stats_.reset();
+    cancel_stats_.reset();
+    fill_stats_.reset();
 }
 
 } // namespace gateway

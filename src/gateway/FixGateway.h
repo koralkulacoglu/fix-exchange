@@ -1,4 +1,5 @@
 #pragma once
+#include "LatencyStats.h"
 #include "engine/MatchingEngine.h"
 #include "engine/Order.h"
 #include "persistence/PersistenceLayer.h"
@@ -35,6 +36,9 @@ public:
 
     void onFill(const engine::Fill& maker, const engine::Fill& taker);
     void onCancel(const engine::CancelRequest& req, bool found);
+
+    std::string get_stats() const;
+    void        reset_stats();
     void onReplace(const engine::ReplaceRequest& req, bool found, int new_leaves_qty);
     void onTIFCancel(const engine::Order& order);
     void onOrderRested(const engine::Order& order, int leaves_qty);
@@ -63,6 +67,10 @@ private:
     market_data::MarketDataPublisher& publisher_;
     persistence::PersistenceLayer* persistence_;
     risk::RiskEngine risk_;
+
+    LatencyStats ack_stats_;    // arrival→New-ack, written from QuickFIX thread
+    LatencyStats cancel_stats_; // arrival→Canceled-ExecReport, written from engine thread
+    LatencyStats fill_stats_;   // arrival→Fill-ExecReport, written from engine thread
 
     std::atomic<int> order_seq_{0};
 

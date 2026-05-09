@@ -1,6 +1,7 @@
 #include "MatchingEngine.h"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 
 namespace engine {
 
@@ -113,9 +114,11 @@ void MatchingEngine::run() {
         WorkItem item = std::move(queue_.front());
         queue_.pop();
         lock.unlock();
+        auto dequeue_ns = std::chrono::steady_clock::now().time_since_epoch().count();
 
         if (item.tag == WorkItem::ORDER) {
             Order order = std::move(item.order);
+            order.dequeue_ns = dequeue_ns;
             auto& book = book_for(order.symbol);
             if (order.tif == '4') {
                 if (book.available_to_fill(order) < order.qty) {
@@ -134,6 +137,7 @@ void MatchingEngine::run() {
                 }
             }
         } else if (item.tag == WorkItem::CANCEL) {
+            item.cancel_req.dequeue_ns = dequeue_ns;
             bool found = book_for(item.cancel_req.symbol).cancel(item.cancel_req.orig_order_id);
             on_cancel_(item.cancel_req, found);
         } else if (item.tag == WorkItem::REPLACE) {

@@ -105,6 +105,8 @@ void OrderBook::match_against(Order& aggressor, BookSide& opposite, bool is_buy)
         resting.leaves_qty   -= fill_qty;
 
         Fill taker = make_fill(aggressor, best_price, fill_qty, aggressor.leaves_qty);
+        taker.arrival_ns  = aggressor.arrival_ns;
+        taker.dequeue_ns  = aggressor.dequeue_ns;
         Fill maker = make_fill(resting,   best_price, fill_qty, resting.leaves_qty);
         on_fill_(maker, taker);
 

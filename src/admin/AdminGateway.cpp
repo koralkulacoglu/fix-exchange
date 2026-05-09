@@ -11,8 +11,11 @@ namespace admin {
 
 AdminGateway::AdminGateway(engine::MatchingEngine& engine, int port,
                            std::vector<std::string> session_pool,
-                           persistence::PersistenceLayer* persistence)
+                           persistence::PersistenceLayer* persistence,
+                           std::function<std::string()> stats_fn,
+                           std::function<void()> reset_stats_fn)
     : engine_(engine), persistence_(persistence), port_(port),
+      stats_fn_(std::move(stats_fn)), reset_stats_fn_(std::move(reset_stats_fn)),
       pool_(std::move(session_pool)),
       available_(pool_.begin(), pool_.end()) {}
 
@@ -119,8 +122,13 @@ void AdminGateway::handle_client(int fd) {
                     available_.insert(comp_id);
                     response = "OK\n";
                 }
+            } else if (line == "STATS") {
+                response = stats_fn_ ? stats_fn_() : "ERROR: stats unavailable\nEND\n";
+            } else if (line == "RESET-STATS") {
+                if (reset_stats_fn_) { reset_stats_fn_(); response = "OK\n"; }
+                else response = "ERROR: stats unavailable\n";
             } else if (line == "HELP") {
-                response = "Commands: REGISTER <SYMBOL> | CLAIM-SESSION | RELEASE-SESSION <ID>\n";
+                response = "Commands: REGISTER <SYMBOL> | CLAIM-SESSION | RELEASE-SESSION <ID> | STATS | RESET-STATS\n";
             } else {
                 response = "ERROR: unknown command\n";
             }

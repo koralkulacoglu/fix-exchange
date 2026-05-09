@@ -130,7 +130,9 @@ int main(int argc, char* argv[]) {
         FIX::FileLogFactory   log(settings);
         FIX::SocketAcceptor   acceptor(gateway, store, settings, log);
 
-        admin::AdminGateway admin_gw(engine, admin_port, pool_ids, persistence.get());
+        admin::AdminGateway admin_gw(engine, admin_port, pool_ids, persistence.get(),
+            [&gateway]{ return gateway.get_stats(); },
+            [&gateway]{ gateway.reset_stats(); });
 
         // Crash recovery: restore symbols and resting orders before accepting connections
         if (persistence) {

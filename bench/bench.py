@@ -2,15 +2,18 @@
 """
 Latency / throughput benchmarking harness for fix-exchange.
 
-    python3 tests/bench.py [options]
+    python3 bench/bench.py [options]
 
 Options:
-    --host HOST       exchange host          (default: 127.0.0.1)
-    --port PORT       FIX acceptor port      (default: 5001)
-    --count N         iterations/scenario    (default: 500)
-    --scenario NAME   add|cancel|match|mixed|all  (default: all)
-    --out DIR         chart output directory (default: docs/bench_results)
-    --no-spawn        connect to a running exchange instead of starting one
+    --host HOST        exchange host           (default: 127.0.0.1)
+    --port PORT        FIX acceptor port       (default: 5001)
+    --admin-port PORT  admin gateway port      (default: 5002)
+    --count N          iterations/scenario     (default: 500)
+    --scenario NAME    add|cancel|match|mixed|all  (default: all)
+    --out DIR          chart output directory  (default: docs/bench_results)
+    --no-spawn         connect to a running exchange instead of starting one
+    --save             persist results to SQLite on bench-history branch
+    --build-type TYPE  Release or Debug        (default: Release)
 """
 
 import argparse
@@ -18,13 +21,13 @@ import atexit
 import datetime
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
 
 EXCHANGE_BIN = "./build/fix-exchange"
 EXCHANGE_CFG = "config/exchange.cfg"
-SENDER       = "CLIENT"
 TARGET       = "EXCHANGE"
 SEP          = "\x01"
 
@@ -36,9 +39,9 @@ def _now_fix() -> str:
 def _checksum(data: str) -> str:
     return f"{sum(data.encode('ascii')) % 256:03d}"
 
-def _build(msg_type: str, seq: int, fields: dict) -> bytes:
+def _build(msg_type: str, seq: int, sender: str, fields: dict) -> bytes:
     header = (
-        f"35={msg_type}{SEP}49={SENDER}{SEP}56={TARGET}{SEP}"
+        f"35={msg_type}{SEP}49={sender}{SEP}56={TARGET}{SEP}"
         f"34={seq}{SEP}52={_now_fix()}{SEP}"
     )
     body = header + "".join(f"{k}={v}{SEP}" for k, v in fields.items())
@@ -56,10 +59,11 @@ def _parse(raw: bytes) -> dict:
 
 
 class FixSession:
-    def __init__(self, host: str, port: int):
+    def __init__(self, host: str, port: int, sender: str):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.settimeout(10)
         self.host, self.port = host, port
+        self.sender = sender
         self.seq = 1
         self.buf = b""
 
@@ -73,31 +77,38 @@ class FixSession:
             pass
 
     def send(self, msg_type: str, fields: dict) -> None:
-        self.sock.sendall(_build(msg_type, self.seq, fields))
+        self.sock.sendall(_build(msg_type, self.seq, self.sender, fields))
         self.seq += 1
 
     def send_timed(self, msg_type: str, fields: dict) -> int:
         """Send and return perf_counter_ns timestamp after sendall."""
-        msg = _build(msg_type, self.seq, fields)
+        msg = _build(msg_type, self.seq, self.sender, fields)
         self.seq += 1
         self.sock.sendall(msg)
         return time.perf_counter_ns()
 
     def recv(self) -> dict:
+        msg_bytes, ts = self._recv_raw()
+        return _parse(msg_bytes)
+
+    def _recv_raw(self) -> tuple:
+        """Return (raw_bytes, perf_counter_ns) timestamped before parsing."""
         while True:
             if b"10=" in self.buf:
                 end = self.buf.index(b"10=")
                 soh = self.buf.index(b"\x01", end)
-                msg, self.buf = self.buf[:soh + 1], self.buf[soh + 1:]
-                return _parse(msg)
+                msg_bytes, self.buf = self.buf[:soh + 1], self.buf[soh + 1:]
+                ts = time.perf_counter_ns()
+                return msg_bytes, ts
             chunk = self.sock.recv(8192)
             if not chunk:
                 raise ConnectionError("exchange closed connection")
             self.buf += chunk
 
     def recv_timed(self) -> tuple:
-        msg = self.recv()
-        return msg, time.perf_counter_ns()
+        """Return (parsed_dict, perf_counter_ns) — timestamp before parse."""
+        msg_bytes, ts = self._recv_raw()
+        return _parse(msg_bytes), ts
 
     def logon(self):
         self.send("A", {"98": "0", "108": "30"})
@@ -131,6 +142,57 @@ def _wait_exec(s: FixSession, exec_type=None) -> tuple:
         if msg.get("35") == "8":
             if exec_type is None or msg.get("150") == exec_type:
                 return msg, ts
+
+
+# ── Admin helpers ───────────────────────────────────────────────────────────────
+
+def claim_session(host: str, port: int) -> str:
+    resp = _admin_cmd(host, port, "CLAIM-SESSION")
+    if not resp.startswith("OK "):
+        raise RuntimeError(f"CLAIM-SESSION failed: {resp!r}")
+    return resp[3:].strip()
+
+def release_session(host: str, port: int, comp_id: str) -> None:
+    _admin_cmd(host, port, f"RELEASE-SESSION {comp_id}")
+
+def _admin_cmd(host: str, port: int, cmd: str) -> str:
+    with socket.create_connection((host, port), timeout=5) as s:
+        s.sendall((cmd + "\n").encode())
+        data = b""
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+            if cmd == "STATS":
+                if b"END\n" in data:
+                    break
+            else:
+                if b"\n" in data:
+                    break
+        return data.decode()
+
+def reset_stats(host: str, port: int) -> None:
+    _admin_cmd(host, port, "RESET-STATS")
+
+def fetch_stats(host: str, port: int) -> dict:
+    """Query STATS and return dict of kind -> list[float] in microseconds."""
+    raw = _admin_cmd(host, port, "STATS")
+    result: dict = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line == "END":
+            continue
+        parts = line.split(" ", 1)
+        if len(parts) != 2:
+            continue
+        key, values_str = parts
+        try:
+            values = [int(v) / 1000.0 for v in values_str.split(",") if v]
+        except ValueError:
+            continue
+        result[key] = values
+    return result
 
 
 # ── Scenarios ──────────────────────────────────────────────────────────────────
@@ -193,14 +255,6 @@ def scenario_match(s: FixSession, count: int, symbol: str) -> list:
                     and msg.get("11") == mbuy):
                 break
         latencies.append((t1 - t0) / 1000)
-
-        old = s.sock.gettimeout()
-        s.sock.settimeout(0.05)
-        try:
-            s.recv()
-        except socket.timeout:
-            pass
-        s.sock.settimeout(old)
     return latencies
 
 
@@ -276,17 +330,29 @@ def print_results(results: dict) -> None:
 def _rich_table(results: dict) -> None:
     console = _Console()
     t = _Table(box=_rbox.ROUNDED, header_style="bold cyan", show_header=True)
-    for col, just in [
-        ("scenario", "left"), ("n", "right"), ("p50", "right"),
-        ("p95", "right"), ("p99", "right"), ("max", "right"), ("ops/sec", "right"),
-    ]:
+    cols = [
+        ("scenario",    "left"),
+        ("n",           "right"),
+        ("rtt p50",     "right"),
+        ("rtt p99",     "right"),
+        ("int p50",     "right"),
+        ("int p99",     "right"),
+        ("queue p50",   "right"),
+        ("ops/sec",     "right"),
+    ]
+    for col, just in cols:
         t.add_column(col, justify=just, style="bold" if col == "scenario" else "")
     for name, r in results.items():
-        st = r["stats"]
+        rtt  = r["rtt_stats"]
+        int_ = r["int_stats"]
+        q    = r["queue_stats"]
         t.add_row(
-            name, str(st["n"]),
-            _fmt(st["p50"]), _fmt(st["p95"]), _fmt(st["p99"]), _fmt(st["max"]),
-            f"{st['ops_sec']:,.0f}",
+            name, str(rtt["n"]),
+            _fmt(rtt["p50"]), _fmt(rtt["p99"]),
+            _fmt(int_["p50"]) if int_["n"] else "—",
+            _fmt(int_["p99"]) if int_["n"] else "—",
+            _fmt(q["p50"])   if q["n"]   else "—",
+            f"{rtt['ops_sec']:,.0f}",
         )
     console.print()
     console.print(t)
@@ -295,7 +361,7 @@ def _rich_histograms(results: dict) -> None:
     console = _Console()
     BAR = 32
     for name, r in results.items():
-        data = r["latencies"]
+        data = r["rtt"]
         if not data:
             continue
         lo, hi = min(data), max(data)
@@ -308,7 +374,7 @@ def _rich_histograms(results: dict) -> None:
             counts[min(int((v - lo) / w), BINS - 1)] += 1
         total  = len(data)
         max_c  = max(counts)
-        console.print(f"\n  [bold]{name}[/bold] — latency distribution")
+        console.print(f"\n  [bold]{name}[/bold] — RTT latency distribution")
         for i, c in enumerate(counts):
             b0, b1 = lo + i * w, lo + (i + 1) * w
             bar = "█" * (int(c / max_c * BAR) if max_c else 0)
@@ -319,13 +385,19 @@ def _rich_histograms(results: dict) -> None:
     console.print()
 
 def _plain_table(results: dict) -> None:
-    header = f"{'scenario':<12} {'n':>6} {'p50':>10} {'p95':>10} {'p99':>10} {'max':>10} {'ops/sec':>10}"
+    header = (f"{'scenario':<12} {'n':>6} {'rtt p50':>10} {'rtt p99':>10} "
+              f"{'int p50':>10} {'int p99':>10} {'queue p50':>10} {'ops/sec':>10}")
     print(f"\n{header}\n{'-' * len(header)}")
     for name, r in results.items():
-        st = r["stats"]
+        rtt  = r["rtt_stats"]
+        int_ = r["int_stats"]
+        q    = r["queue_stats"]
         print(
-            f"{name:<12} {st['n']:>6} {_fmt(st['p50']):>10} {_fmt(st['p95']):>10} "
-            f"{_fmt(st['p99']):>10} {_fmt(st['max']):>10} {st['ops_sec']:>10,.0f}"
+            f"{name:<12} {rtt['n']:>6} {_fmt(rtt['p50']):>10} {_fmt(rtt['p99']):>10} "
+            f"{_fmt(int_['p50']) if int_['n'] else '—':>10} "
+            f"{_fmt(int_['p99']) if int_['n'] else '—':>10} "
+            f"{_fmt(q['p50']) if q['n'] else '—':>10} "
+            f"{rtt['ops_sec']:>10,.0f}"
         )
     print()
 
@@ -339,6 +411,7 @@ def save_charts(results: dict, out_dir: str) -> None:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        import numpy as np
     except ImportError:
         print("matplotlib not installed — skipping chart generation")
         return
@@ -346,10 +419,10 @@ def save_charts(results: dict, out_dir: str) -> None:
     os.makedirs(out_dir, exist_ok=True)
     names = list(results.keys())
 
-    # Latency CDF
+    # RTT latency CDF
     fig, ax = plt.subplots(figsize=(8, 5))
     for (name, r), color in zip(results.items(), COLORS):
-        data = sorted(r["latencies"])
+        data = sorted(r["rtt"])
         if not data:
             continue
         y = [(i + 1) / len(data) * 100 for i in range(len(data))]
@@ -372,7 +445,7 @@ def save_charts(results: dict, out_dir: str) -> None:
     print(f"  saved {path}")
 
     # Throughput bar chart
-    ops = [results[n]["stats"]["ops_sec"] for n in names]
+    ops = [results[n]["rtt_stats"]["ops_sec"] for n in names]
     fig, ax = plt.subplots(figsize=(7, 4))
     bars = ax.bar(names, ops, color=COLORS[:len(names)])
     ax.bar_label(bars, labels=[f"{v:,.0f}" for v in ops], padding=4, fontsize=9)
@@ -382,6 +455,32 @@ def save_charts(results: dict, out_dir: str) -> None:
     ax.grid(True, axis="y", alpha=0.25)
     fig.tight_layout()
     path = os.path.join(out_dir, "throughput.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  saved {path}")
+
+    # Internal vs RTT comparison
+    x = np.arange(len(names))
+    width = 0.25
+    rtt_p50   = [results[n]["rtt_stats"]["p50"]   for n in names]
+    int_p50   = [results[n]["int_stats"]["p50"]   if results[n]["int_stats"]["n"] else 0 for n in names]
+    queue_p50 = [results[n]["queue_stats"]["p50"] if results[n]["queue_stats"]["n"] else 0 for n in names]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    b1 = ax.bar(x - width, rtt_p50,   width, label="RTT p50",        color="#4c72b0")
+    b2 = ax.bar(x,          int_p50,   width, label="Internal p50",   color="#55a868")
+    b3 = ax.bar(x + width,  queue_p50, width, label="Queue wait p50", color="#dd8452")
+    ax.bar_label(b1, labels=[_fmt(v) for v in rtt_p50],   padding=3, fontsize=8)
+    ax.bar_label(b2, labels=[_fmt(v) if v else "—" for v in int_p50],   padding=3, fontsize=8)
+    ax.bar_label(b3, labels=[_fmt(v) if v else "—" for v in queue_p50], padding=3, fontsize=8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(names)
+    ax.set_ylabel("Latency (µs)")
+    ax.set_title("fix-exchange — RTT vs Internal vs Queue Wait (p50)")
+    ax.legend()
+    ax.grid(True, axis="y", alpha=0.25)
+    fig.tight_layout()
+    path = os.path.join(out_dir, "internal_vs_rtt.png")
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f"  saved {path}")
@@ -406,6 +505,86 @@ def start_exchange(host: str, port: int) -> None:
     raise RuntimeError("exchange failed to start within 4 s")
 
 
+# ── Historical storage ──────────────────────────────────────────────────────────
+
+DB_PATH = "bench/results.db"
+
+def save_results(results: dict, out_dir: str) -> None:
+    git_version = subprocess.check_output(
+        ["git", "describe", "--tags", "--always"], stderr=subprocess.DEVNULL
+    ).decode().strip()
+    git_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
+    ).decode().strip()
+    run_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    con = sqlite3.connect(DB_PATH)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS bench_runs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at      TEXT    NOT NULL,
+            git_version TEXT    NOT NULL,
+            git_commit  TEXT    NOT NULL,
+            build_type  TEXT    NOT NULL,
+            scenario    TEXT    NOT NULL,
+            n           INTEGER NOT NULL
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS bench_samples (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id   INTEGER NOT NULL REFERENCES bench_runs(id),
+            kind     TEXT    NOT NULL,
+            value_us REAL    NOT NULL
+        )
+    """)
+    con.commit()
+
+    # Delete any existing data for this version so re-runs overwrite cleanly
+    existing = con.execute(
+        "SELECT id FROM bench_runs WHERE git_version=?", (git_version,)
+    ).fetchall()
+    if existing:
+        ids = [str(r[0]) for r in existing]
+        con.execute(f"DELETE FROM bench_samples WHERE run_id IN ({','.join(ids)})")
+        con.execute("DELETE FROM bench_runs WHERE git_version=?", (git_version,))
+        con.commit()
+        print(f"  Replaced existing results for {git_version}")
+
+    for name, r in results.items():
+        cur = con.execute(
+            "INSERT INTO bench_runs (run_at, git_version, git_commit, build_type, scenario, n) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (run_at, git_version, git_commit, "Release", name, r["rtt_stats"]["n"])
+        )
+        run_id = cur.lastrowid
+        rows = []
+        for v in r["rtt"]:
+            rows.append((run_id, "rtt", v))
+        for v in r.get("ack_total", []):
+            rows.append((run_id, "ack_total", v))
+        for v in r.get("ack_queue", []):
+            rows.append((run_id, "ack_queue", v))
+        for v in r.get("cancel_total", []):
+            rows.append((run_id, "cancel_total", v))
+        for v in r.get("cancel_queue", []):
+            rows.append((run_id, "cancel_queue", v))
+        for v in r.get("fill_total", []):
+            rows.append((run_id, "fill_total", v))
+        for v in r.get("fill_queue", []):
+            rows.append((run_id, "fill_queue", v))
+        con.executemany(
+            "INSERT INTO bench_samples (run_id, kind, value_us) VALUES (?, ?, ?)", rows)
+    con.commit()
+    con.close()
+    print(f"  Results saved to {DB_PATH} (version={git_version})")
+
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(__file__))
+    import plot_history
+    plot_history.generate_charts(DB_PATH, out_dir)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 SCENARIOS = {
@@ -418,15 +597,17 @@ SCENARIOS = {
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--host",      default="127.0.0.1")
-    ap.add_argument("--port",      type=int, default=5001)
-    ap.add_argument("--count",     type=int, default=500)
-    ap.add_argument("--scenario",  default="all",
+    ap.add_argument("--host",       default="127.0.0.1")
+    ap.add_argument("--port",       type=int, default=5001)
+    ap.add_argument("--admin-port", type=int, default=5002, dest="admin_port")
+    ap.add_argument("--count",      type=int, default=500)
+    ap.add_argument("--scenario",   default="all",
                     choices=[*SCENARIOS, "all"])
-    ap.add_argument("--out",       default="docs/bench_results",
-                    metavar="DIR")
-    ap.add_argument("--no-spawn",  action="store_true",
+    ap.add_argument("--out",        default="bench/bench_results", metavar="DIR")
+    ap.add_argument("--no-spawn",   action="store_true",
                     help="connect to an already-running exchange")
+    ap.add_argument("--save",       action="store_true",
+                    help="persist results to bench/results.db and regenerate trend charts")
     args = ap.parse_args()
 
     to_run = list(SCENARIOS.items()) if args.scenario == "all" \
@@ -439,20 +620,57 @@ def main():
     results = {}
     for name, (fn, symbol) in to_run:
         print(f"  running {name!r} × {args.count} …", end=" ", flush=True)
-        s = FixSession(args.host, args.port)
+        comp_id = claim_session(args.host, args.admin_port)
+        s = FixSession(args.host, args.port, sender=comp_id)
         s.connect()
         s.logon()
+
+        reset_stats(args.host, args.admin_port)
         latencies = fn(s, args.count, symbol)
+        raw_stats = fetch_stats(args.host, args.admin_port)
+
         s.logout()
         s.close()
-        st = compute_stats(latencies)
-        results[name] = {"latencies": latencies, "stats": st}
-        print(f"p50={_fmt(st['p50'])}  p99={_fmt(st['p99'])}  ops/sec={st['ops_sec']:,.0f}")
+        release_session(args.host, args.admin_port, comp_id)
+
+        rtt_st = compute_stats(latencies)
+        # Pick the most relevant internal track per scenario:
+        #   match  → fill path (taker arrival → Fill ExecReport send)
+        #   cancel/mixed → cancel path (cancel arrival → Canceled ExecReport send)
+        #   add    → ack path (New ack, sent before engine queue; queue_wait=0 by design)
+        if raw_stats.get("FILL_TOTAL_NS"):
+            int_data   = raw_stats["FILL_TOTAL_NS"]
+            queue_data = raw_stats["FILL_QUEUE_NS"]
+        elif raw_stats.get("CANCEL_TOTAL_NS"):
+            int_data   = raw_stats["CANCEL_TOTAL_NS"]
+            queue_data = raw_stats["CANCEL_QUEUE_NS"]
+        else:
+            int_data   = raw_stats.get("ACK_TOTAL_NS", [])
+            queue_data = raw_stats.get("ACK_QUEUE_NS", [])
+
+        results[name] = {
+            "rtt":           latencies,
+            "rtt_stats":     rtt_st,
+            "int_stats":     compute_stats(int_data),
+            "queue_stats":   compute_stats(queue_data),
+            "ack_total":     raw_stats.get("ACK_TOTAL_NS", []),
+            "ack_queue":     raw_stats.get("ACK_QUEUE_NS", []),
+            "cancel_total":  raw_stats.get("CANCEL_TOTAL_NS", []),
+            "cancel_queue":  raw_stats.get("CANCEL_QUEUE_NS", []),
+            "fill_total":    raw_stats.get("FILL_TOTAL_NS", []),
+            "fill_queue":    raw_stats.get("FILL_QUEUE_NS", []),
+        }
+        rtt_p50 = _fmt(rtt_st["p50"])
+        int_p50 = _fmt(compute_stats(int_data)["p50"]) if int_data else "—"
+        print(f"rtt p50={rtt_p50}  internal p50={int_p50}  ops/sec={rtt_st['ops_sec']:,.0f}")
 
     print_results(results)
 
     print("Saving charts …")
     save_charts(results, args.out)
+
+    if args.save:
+        save_results(results, args.out)
 
 if __name__ == "__main__":
     main()

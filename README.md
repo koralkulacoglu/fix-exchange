@@ -2,7 +2,48 @@
 
 A single-process equity exchange written in C++. Clients connect over TCP using the FIX 4.2 protocol to submit orders and receive execution reports. Market data is broadcast over UDP multicast as binary packets. A price-time priority matching engine runs on a dedicated thread. Resting orders, fills, cancels, and runtime symbol registrations are persisted to SQLite so the book survives restarts and crashes. Pre-trade risk controls are enforced before orders reach the matching engine.
 
-![Trading UI](docs/screenshots/ui.png)
+---
+
+## Performance
+
+See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology and scenario descriptions.
+
+RTT latency distribution across all scenarios (latest release):
+
+![Latency CDF](bench/bench_results/latency_cdf.png)
+
+Solid lines are client-perceived RTT; dashed lines are internal exchange processing time (excludes TCP and client overhead). Results are recorded on each tagged release and committed to the repo.
+
+<table><tr>
+<td><img src="bench/bench_results/trend_p50.png"/></td>
+<td><img src="bench/bench_results/trend_ops.png"/></td>
+</tr></table>
+
+To run the benchmark and record results for the current tagged version:
+
+```bash
+. .venv/bin/activate
+pip install rich matplotlib
+python3 bench/bench.py --save
+```
+
+---
+
+## Dependencies
+
+| Dependency     | Version | Install                            |
+| -------------- | ------- | ---------------------------------- |
+| g++ or clang++ | C++14+  | system                             |
+| CMake          | 3.20+   | system                             |
+| QuickFIX       | 1.14+   | `sudo apt install libquickfix-dev` |
+| SQLite3        | 3.x     | `sudo apt install libsqlite3-dev`  |
+| OpenSSL        | any     | usually pre-installed              |
+
+### One-time setup (Ubuntu / WSL2)
+
+```bash
+sudo apt install libquickfix-dev libsqlite3-dev
+```
 
 ---
 
@@ -26,39 +67,6 @@ flowchart LR
     ME -->|"Fill events"| MDP
     MDP -->|"binary packets"| MCast
     Admin -->|"REGISTER"| ME
-```
-
----
-
-## Performance
-
-See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, scenario descriptions, and how to run.
-
-![Latency CDF](docs/bench_results/latency_cdf.png)
-
-Generate results and charts locally:
-
-```bash
-pip install rich matplotlib
-python3 bench/bench.py --count 1000
-```
-
----
-
-## Dependencies
-
-| Dependency     | Version | Install                            |
-| -------------- | ------- | ---------------------------------- |
-| g++ or clang++ | C++14+  | system                             |
-| CMake          | 3.20+   | system                             |
-| QuickFIX       | 1.14+   | `sudo apt install libquickfix-dev` |
-| SQLite3        | 3.x     | `sudo apt install libsqlite3-dev`  |
-| OpenSSL        | any     | usually pre-installed              |
-
-### One-time setup (Ubuntu / WSL2)
-
-```bash
-sudo apt install libquickfix-dev libsqlite3-dev
 ```
 
 ---
@@ -102,6 +110,8 @@ rm -rf store/
 ## Trading UI
 
 A browser-based interface for placing orders and watching the live order book. See [docs/UI.md](docs/UI.md) for full details.
+
+![Trading UI](docs/screenshots/ui.png)
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
