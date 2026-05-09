@@ -48,6 +48,31 @@ inline FIX42::ExecutionReport make_exec_report(
     return msg;
 }
 
+inline FIX42::ExecutionReport make_exec_report(const engine::Fill& fill, ExecType exec_type)
+{
+    char et  = static_cast<char>(exec_type);
+    int  cum = fill.order_qty - fill.leaves_qty;
+
+    FIX42::ExecutionReport msg(
+        FIX::OrderID(fill.exchange_id),
+        FIX::ExecID(fill.exec_id),
+        FIX::ExecTransType('0'),
+        FIX::ExecType(et),
+        FIX::OrdStatus(et),
+        FIX::Symbol(fill.symbol),
+        FIX::Side(fill.side),
+        FIX::LeavesQty(fill.leaves_qty),
+        FIX::CumQty(cum),
+        FIX::AvgPx(fill.price)
+    );
+    msg.set(FIX::ClOrdID(fill.clord_id));
+    msg.set(FIX::OrderQty(fill.order_qty));
+    if (fill.order_type == '2')
+        msg.set(FIX::Price(fill.limit_price));
+    msg.set(FIX::LastShares(fill.qty));
+    return msg;
+}
+
 inline FIX42::ExecutionReport make_tif_cancel_report(const engine::Order& order)
 {
     char et  = static_cast<char>(ExecType::Canceled);

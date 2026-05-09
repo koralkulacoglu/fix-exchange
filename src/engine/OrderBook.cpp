@@ -181,7 +181,10 @@ Fill OrderBook::make_fill(const Order& order, double price, int qty, int leaves)
         order.side,
         price,
         qty,
-        leaves
+        leaves,
+        order.qty,    // order_qty
+        order.type,   // order_type
+        order.price,  // limit_price
     };
 }
 

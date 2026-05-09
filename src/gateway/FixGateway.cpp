@@ -21,10 +21,12 @@ FixGateway::FixGateway(engine::MatchingEngine& engine,
       risk_(risk_cfg) {}
 
 void FixGateway::restoreOrders(const std::vector<engine::Order>& orders, int max_seq) {
-    std::lock_guard<std::mutex> lock(orders_mutex_);
-    for (const auto& o : orders) {
-        active_orders_.emplace(o.exchange_id, o);
-        clord_to_exchange_.emplace(o.clord_id, o.exchange_id);
+    std::lock(routing_mutex_, orders_mutex_);
+    std::lock_guard<std::mutex> rl(routing_mutex_, std::adopt_lock);
+    std::lock_guard<std::mutex> ol(orders_mutex_, std::adopt_lock);
+    for (const auto& order : orders) {
+        active_orders_.emplace(order.exchange_id, order);
+        clord_to_exchange_.emplace(order.clord_id, order.exchange_id);
         // order_sessions_ left empty — onLogon re-binds when clients reconnect
     }
     if (max_seq > 0) order_seq_.store(max_seq);
@@ -60,7 +62,9 @@ void FixGateway::onLogon(const FIX::SessionID& id) {
     std::string client_id = id.getTargetCompID().getValue();
     std::vector<engine::Order> client_orders;
     {
-        std::lock_guard<std::mutex> lock(orders_mutex_);
+        std::lock(routing_mutex_, orders_mutex_);
+        std::lock_guard<std::mutex> rl(routing_mutex_, std::adopt_lock);
+        std::lock_guard<std::mutex> ol(orders_mutex_, std::adopt_lock);
         for (auto& [exch_id, order] : active_orders_) {
             if (order.client_id == client_id) {
                 client_orders.push_back(order);
@@ -158,10 +162,13 @@ void FixGateway::onMessage(const FIX42::NewOrderSingle& msg, const FIX::SessionI
     order.arrival_ns = arrival_ns;
 
     {
-        std::lock_guard<std::mutex> lock(orders_mutex_);
+        std::lock_guard<std::mutex> lock(routing_mutex_);
         order_sessions_.emplace(order.exchange_id, session_id);
-        active_orders_.emplace(order.exchange_id, order);
         clord_to_exchange_.emplace(order.clord_id, order.exchange_id);
+    }
+    {
+        std::lock_guard<std::mutex> lock(orders_mutex_);
+        active_orders_.emplace(order.exchange_id, order);
     }
 
     auto ack = make_exec_report(order, ExecType::New);
@@ -183,7 +190,7 @@ void FixGateway::onMessage(const FIX42::OrderCancelRequest& msg, const FIX::Sess
     req.symbol = symbol.getValue();
 
     {
-        std::lock_guard<std::mutex> lock(orders_mutex_);
+        std::lock_guard<std::mutex> lock(routing_mutex_);
         auto it = clord_to_exchange_.find(origClOrdID.getValue());
         if (it == clord_to_exchange_.end()) return;
         req.orig_order_id = it->second; // resolve ClOrdID → exchange_id
@@ -211,7 +218,9 @@ void FixGateway::onMessage(const FIX42::OrderCancelReplaceRequest& msg, const FI
     req.new_qty      = static_cast<int>(orderQty.getValue());
 
     {
-        std::lock_guard<std::mutex> lock(orders_mutex_);
+        std::lock(routing_mutex_, orders_mutex_);
+        std::lock_guard<std::mutex> rl(routing_mutex_, std::adopt_lock);
+        std::lock_guard<std::mutex> ol(orders_mutex_, std::adopt_lock);
         auto cit = clord_to_exchange_.find(req.old_clord_id);
         if (cit == clord_to_exchange_.end()) {
             auto reject = make_cancel_reject(req.new_clord_id, req.old_clord_id, "UNKNOWN", "Unknown order");
@@ -240,7 +249,9 @@ void FixGateway::onReplace(const engine::ReplaceRequest& req, bool found, int ne
     engine::Order order;
     double order_old_price = 0.0;
     {
-        std::lock_guard<std::mutex> lock(orders_mutex_);
+        std::lock(routing_mutex_, orders_mutex_);
+        std::lock_guard<std::mutex> rl(routing_mutex_, std::adopt_lock);
+        std::lock_guard<std::mutex> ol(orders_mutex_, std::adopt_lock);
         auto sit = order_sessions_.find(req.orig_order_id);
         auto oit = active_orders_.find(req.orig_order_id);
         if (sit == order_sessions_.end() || oit == active_orders_.end()) return;
@@ -285,7 +296,9 @@ void FixGateway::onCancel(const engine::CancelRequest& req, bool found) {
     FIX::SessionID session_id;
     engine::Order order;
     {
-        std::lock_guard<std::mutex> lock(orders_mutex_);
+        std::lock(routing_mutex_, orders_mutex_);
+        std::lock_guard<std::mutex> rl(routing_mutex_, std::adopt_lock);
+        std::lock_guard<std::mutex> ol(orders_mutex_, std::adopt_lock);
         auto sit = order_sessions_.find(req.orig_order_id);
         auto oit = active_orders_.find(req.orig_order_id);
         if (sit == order_sessions_.end() || oit == active_orders_.end()) return;
@@ -318,30 +331,28 @@ void FixGateway::onCancel(const engine::CancelRequest& req, bool found) {
 void FixGateway::onFill(const engine::Fill& maker, const engine::Fill& taker) {
     auto send_fill = [this](const engine::Fill& fill) {
         FIX::SessionID session_id;
-        engine::Order order;
         {
-            std::lock_guard<std::mutex> lock(orders_mutex_);
+            std::lock_guard<std::mutex> lock(routing_mutex_);
             auto sit = order_sessions_.find(fill.exchange_id);
             if (sit == order_sessions_.end()) return;
             session_id = sit->second;
-            auto oit = active_orders_.find(fill.exchange_id);
-            if (oit != active_orders_.end()) {
-                order = oit->second;
-                if (fill.leaves_qty == 0) {
-                    order_sessions_.erase(sit);
-                    clord_to_exchange_.erase(oit->second.clord_id);
-                    active_orders_.erase(oit);
-                } else {
-                    oit->second.leaves_qty = fill.leaves_qty;
-                }
-            } else if (fill.leaves_qty == 0) {
+            if (fill.leaves_qty == 0) {
                 order_sessions_.erase(sit);
+                clord_to_exchange_.erase(fill.clord_id);
             }
         }
-        order.leaves_qty = fill.leaves_qty;
-
+        {
+            std::lock_guard<std::mutex> lock(orders_mutex_);
+            if (fill.leaves_qty == 0) {
+                active_orders_.erase(fill.exchange_id);
+            } else {
+                auto oit = active_orders_.find(fill.exchange_id);
+                if (oit != active_orders_.end())
+                    oit->second.leaves_qty = fill.leaves_qty;
+            }
+        }
         ExecType et = (fill.leaves_qty == 0) ? ExecType::Fill : ExecType::PartFill;
-        auto report = make_exec_report(order, et, &fill);
+        auto report = make_exec_report(fill, et);
         FIX::Session::sendToTarget(report, session_id);
     };
 
@@ -369,7 +380,9 @@ void FixGateway::onFill(const engine::Fill& maker, const engine::Fill& taker) {
 void FixGateway::onTIFCancel(const engine::Order& order) {
     FIX::SessionID session_id;
     {
-        std::lock_guard<std::mutex> lock(orders_mutex_);
+        std::lock(routing_mutex_, orders_mutex_);
+        std::lock_guard<std::mutex> rl(routing_mutex_, std::adopt_lock);
+        std::lock_guard<std::mutex> ol(orders_mutex_, std::adopt_lock);
         auto sit = order_sessions_.find(order.exchange_id);
         if (sit == order_sessions_.end()) return;
         session_id = sit->second;

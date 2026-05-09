@@ -45,9 +45,12 @@ struct Fill {
     std::string client_id;
     std::string symbol;
     char side;
-    double price;
-    int qty;
+    double price;              // execution price
+    int qty;                   // fill quantity
     int leaves_qty;
+    int    order_qty{0};       // original order quantity
+    char   order_type{'0'};    // '1' market, '2' limit
+    double limit_price{0.0};   // limit price (meaningful when order_type == '2')
     int64_t arrival_ns{0};    // copied from Order::arrival_ns (taker only; 0 for maker)
     int64_t dequeue_ns{0};    // copied from Order::dequeue_ns (taker only; 0 for maker)
 };
