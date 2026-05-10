@@ -30,7 +30,7 @@ public:
                    std::vector<std::string> symbols = {});
     ~MatchingEngine();
 
-    void start();
+    void start(int core = -1);
     void stop();
 
     void submit(Order order);
@@ -74,6 +74,7 @@ private:
     std::condition_variable idle_cv_;
     std::atomic<bool> stop_{false};
     std::thread thread_;
+    int core_ = -1;
 };
 
 } // namespace engine

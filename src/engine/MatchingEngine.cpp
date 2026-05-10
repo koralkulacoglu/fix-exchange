@@ -2,6 +2,10 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 namespace engine {
 
@@ -47,7 +51,8 @@ bool MatchingEngine::isValidSymbol(const std::string& symbol) const {
 
 MatchingEngine::~MatchingEngine() { stop(); }
 
-void MatchingEngine::start() {
+void MatchingEngine::start(int core) {
+    core_ = core;
     thread_ = std::thread(&MatchingEngine::run, this);
 }
 
@@ -95,6 +100,14 @@ void MatchingEngine::cancel(CancelRequest req) {
 }
 
 void MatchingEngine::run() {
+#ifdef __linux__
+    if (core_ >= 0) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(core_, &cpuset);
+        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    }
+#endif
     while (true) {
         WorkItem item;
         if (!queue_.pop(item)) {

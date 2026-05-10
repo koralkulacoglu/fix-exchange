@@ -3,6 +3,10 @@
 #include <iostream>
 #include <stdexcept>
 #include <sys/stat.h>
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 namespace persistence {
 
@@ -29,7 +33,7 @@ static void bind_char(sqlite3_stmt* s, int col, char c) {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-PersistenceLayer::PersistenceLayer(const std::string& path) {
+PersistenceLayer::PersistenceLayer(const std::string& path, int core) : core_(core) {
     // Create parent directory if needed
     auto slash = path.rfind('/');
     if (slash != std::string::npos) {
@@ -114,6 +118,14 @@ void PersistenceLayer::initSchema() {
 // ---------------------------------------------------------------------------
 
 void PersistenceLayer::run() {
+#ifdef __linux__
+    if (core_ >= 0) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(core_, &cpuset);
+        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    }
+#endif
     while (true) {
         std::vector<PersistenceEvent> batch;
         {

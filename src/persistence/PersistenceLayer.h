@@ -21,7 +21,7 @@ struct PersistenceEvent {
 
 class PersistenceLayer {
 public:
-    explicit PersistenceLayer(const std::string& path);
+    explicit PersistenceLayer(const std::string& path, int core = -1);
     ~PersistenceLayer();
 
     // Recovery reads — single-threaded, called before engine.start()
@@ -56,6 +56,7 @@ private:
     std::condition_variable      cv_;
     std::thread                  thread_;
     bool                         stop_{false};
+    int                          core_{-1};
 
     void initSchema();
     void run();

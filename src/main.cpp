@@ -79,10 +79,16 @@ int main(int argc, char* argv[]) {
         market_data::MarketDataPublisher publisher(mcast_group, mcast_port);
 
         std::string db_path = read_exchange_value(config_path, "DatabasePath");
+
+        auto engine_core_str = read_exchange_value(config_path, "EngineCore");
+        int engine_core = engine_core_str.empty() ? -1 : std::stoi(engine_core_str);
+        auto persist_core_str = read_exchange_value(config_path, "PersistenceCore");
+        int persist_core = persist_core_str.empty() ? -1 : std::stoi(persist_core_str);
+
         std::unique_ptr<persistence::PersistenceLayer> persistence;
         if (!db_path.empty())
             persistence = std::unique_ptr<persistence::PersistenceLayer>(
-                new persistence::PersistenceLayer(db_path));
+                new persistence::PersistenceLayer(db_path, persist_core));
 
         gateway::FixGateway* gw_ptr = nullptr;
 
@@ -147,7 +153,7 @@ int main(int argc, char* argv[]) {
                 std::cout << "Recovered " << orders.size() << " resting order(s) from DB\n";
         }
 
-        engine.start();
+        engine.start(engine_core);
         admin_gw.start();
         acceptor.start();
 

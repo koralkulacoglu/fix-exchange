@@ -48,6 +48,8 @@ The `[EXCHANGE]` section is not a standard QuickFIX section — it is parsed man
 | `MulticastPort` | `5003` | `5003` | UDP port subscribers bind to when joining the multicast group. |
 | `SessionPool` | `8` | `0` | Number of additional FIX session slots to pre-allocate at startup (named `S1`–`SN`). Clients claim a slot via `CLAIM-SESSION` on the admin gateway before connecting. `0` disables the pool. |
 | `DatabasePath` | `store/exchange.db` | *(disabled)* | Path to the SQLite database file used for persistence. If set, resting orders, fills, cancels, and runtime symbol registrations are recorded. On restart the book is restored from this file. Omit to run without persistence (all state is lost on crash). The directory must exist; the file is created if absent. |
+| `EngineCore` | `2` | *(unset)* | CPU core number to pin the matching engine thread to at startup (Linux only). If unset, the OS schedules the thread normally. |
+| `PersistenceCore` | `3` | *(unset)* | CPU core number to pin the persistence thread to at startup (Linux only). Has no effect when `DatabasePath` is not set. |
 
 ## [RISK] Settings
 
