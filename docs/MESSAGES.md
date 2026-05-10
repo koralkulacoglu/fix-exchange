@@ -17,10 +17,9 @@
 | `1` | PartialFill — partial fill, order still resting |
 | `2` | Fill — fully filled; also sent on reconnect to replay historical fills |
 | `4` | Canceled — cancel confirmed; also sent on reconnect to replay historical cancels |
+| `5` | Replaced — replace confirmed (qty or price modified) |
 | `8` | Rejected — order rejected (e.g. unknown symbol) |
 | `I` | OrderStatus — open/resting order replayed on reconnect |
-
----
 
 ## UDP Market Data (multicast, default 239.1.1.1:5003)
 
@@ -52,8 +51,6 @@ Packed struct, little-endian. Defined in `src/market_data/MarketDataEvent.h`.
 | 5 | `ReplaceDelete` | First packet of a price-change replace — removes old price level |
 | 6 | `ReplaceNew` | Second packet of a price-change replace — adds at new price level |
 
----
-
 ## Admin Gateway (TCP, port 5002)
 
 Plain-text, line-oriented protocol. Each command is a single `\n`-terminated line; the exchange replies with a single line. Connect with netcat or any TCP client — no FIX session required.
@@ -63,6 +60,8 @@ Plain-text, line-oriented protocol. Each command is a single `\n`-terminated lin
 | `REGISTER <symbol>` | `OK` or `ERROR: ...` | Register a new trading symbol at runtime. Must be 1–8 alphanumeric characters and not already registered. |
 | `CLAIM-SESSION` | `OK <CompID>` or `ERROR: no sessions available` | Claim a free session slot from the pool. Use the returned `CompID` as `SenderCompID` when opening a FIX connection on port 5001. |
 | `RELEASE-SESSION <CompID>` | `OK` or `ERROR: unknown session <CompID>` | Return a claimed slot to the pool. With `ResetOnLogout=Y` the slot resets automatically on the next claim regardless. |
+| `STATS` | serialized latency samples | Returns raw nanosecond latency samples for the current session; consumed by `bench/bench.py` to compute percentiles. |
+| `RESET-STATS` | `OK` | Clears all latency counters. |
 | `HELP` | command list | List available commands. |
 
 ### Multi-client connect flow
@@ -80,8 +79,6 @@ echo "RELEASE-SESSION $CompID" | nc 127.0.0.1 5002
 ```
 
 The pool size is set by `SessionPool` in `config/exchange.cfg` (see [CONFIGURATION.md](CONFIGURATION.md)).
-
----
 
 ### Python subscriber snippet
 

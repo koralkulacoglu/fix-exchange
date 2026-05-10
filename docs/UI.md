@@ -2,7 +2,7 @@
 
 A browser-based trading interface. Each server process claims one FIX session and serves the UI on a port. Place and cancel limit orders, watch the live order book and price chart, and monitor fills in the blotter.
 
----
+![Trading UI](screenshots/ui.png)
 
 ## Requirements
 
@@ -15,8 +15,6 @@ pip install -r requirements.txt
 ```
 
 The exchange must be running before starting the UI.
-
----
 
 ## Running
 
@@ -38,8 +36,6 @@ python3 ui/main.py              # claims S1, serves http://localhost:8080
 python3 ui/main.py --port 8081  # claims S2, serves http://localhost:8081
 ```
 
----
-
 ## Architecture
 
 ```
@@ -55,34 +51,30 @@ Browser  ←→  WebSocket (/ws)  ←→  AsyncFixSession (per server)  ←→  
 - **Trade history.** Per-symbol trade history is loaded from the exchange at startup via `MarketDataRequest` (35=V) and kept current as live UDP trade packets arrive. Survives page reloads within the same server session; repopulated from the exchange on the next server start.
 - **No external FIX library.** Hand-rolled framing shared with `tests/helpers.py`.
 
----
-
 ## WebSocket protocol
 
 All messages are JSON. The browser connects to `ws://<host>:<port>/ws`.
 
 ### Backend → browser
 
-| `type` | Description |
-|--------|-------------|
+| `type`     | Description                                                                                                                                                                                                                                                          |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `snapshot` | Sent on connect. Contains `symbols` (list), `book` (top-10 bids/asks per symbol as `[[price, qty], ...]`), `orders` (list of resting orders as `{eid, symbol, side, price, qty}`), and `trade_history` (map of symbol → `[{time, value}, ...]` for the price chart). |
-| `md` | Incremental market data update. Fields: `evt`, `side`, `symbol`, `price`, `qty`, `seq`. See [MESSAGES.md](MESSAGES.md) for event type values. |
-| `exec` | ExecutionReport forwarded from the exchange. FIX tag numbers as string keys (`"35"`, `"150"`, `"11"`, etc.). |
+| `md`       | Incremental market data update. Fields: `evt`, `side`, `symbol`, `price`, `qty`, `seq`. See [MESSAGES.md](MESSAGES.md) for event type values.                                                                                                                        |
+| `exec`     | ExecutionReport forwarded from the exchange. FIX tag numbers as string keys (`"35"`, `"150"`, `"11"`, etc.).                                                                                                                                                         |
 
 ### Browser → backend
 
-| `type` | Fields | Description |
-|--------|--------|-------------|
-| `new_order` | `symbol`, `side` (`"buy"`/`"sell"`), `qty`, `price` | Submit a limit order. |
-| `cancel` | `orig_clord_id`, `symbol`, `side`, `qty` | Cancel a resting order. `orig_clord_id` comes from the `"11"` tag of the New ack. |
-
----
+| `type`      | Fields                                              | Description                                                                       |
+| ----------- | --------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `new_order` | `symbol`, `side` (`"buy"`/`"sell"`), `qty`, `price` | Submit a limit order.                                                             |
+| `cancel`    | `orig_clord_id`, `symbol`, `side`, `qty`            | Cancel a resting order. `orig_clord_id` comes from the `"11"` tag of the New ack. |
 
 ## Files
 
-| Path | Description |
-|------|-------------|
-| `ui/main.py` | FastAPI app: WebSocket endpoint, UDP listener, static file serving, config reading |
-| `ui/fix_client.py` | `AsyncFixSession` — async FIX framing over `asyncio.open_connection` |
-| `requirements.txt` | `fastapi`, `uvicorn[standard]` |
-| `ui/static/index.html` | Single-page trading UI (plain HTML + CSS + JS, no build step) |
+| Path                   | Description                                                                        |
+| ---------------------- | ---------------------------------------------------------------------------------- |
+| `ui/main.py`           | FastAPI app: WebSocket endpoint, UDP listener, static file serving, config reading |
+| `ui/fix_client.py`     | `AsyncFixSession` — async FIX framing over `asyncio.open_connection`               |
+| `requirements.txt`     | `fastapi`, `uvicorn[standard]`                                                     |
+| `ui/static/index.html` | Single-page trading UI (plain HTML + CSS + JS, no build step)                      |

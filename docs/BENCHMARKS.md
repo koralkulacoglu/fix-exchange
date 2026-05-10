@@ -4,7 +4,7 @@ Two complementary latency measurements are taken on every benchmark run:
 
 - **RTT** — client-perceived: from Python `sendall()` returning to `recv()` completing (before FIX parse). Includes TCP loopback and Python overhead.
 - **Internal** — exchange-side: from `FixGateway::onMessage()` entry to `Session::sendToTarget()` for the response ExecReport. Pure exchange processing time.
-- **Queue wait** — subset of internal: time the order spent in `std::queue<WorkItem>` waiting for the engine thread to dequeue it.
+- **Queue wait** — subset of internal: time the order spent in the SPSC ring buffer waiting for the engine thread to dequeue it.
 
 ```mermaid
 sequenceDiagram
@@ -21,7 +21,7 @@ sequenceDiagram
     G-->>L: sendToTarget(New ack)
     Note over G: ack_stats_.record(now−arrival_ns, queue_wait=0)
     G->>Q: engine_.submit(order)
-    Note over Q: order waits in std::queue
+    Note over Q: order waits in ring buffer
     Q->>E: dequeue
     Note over E: order.dequeue_ns = steady_clock::now()
     E->>E: OrderBook::match_against()
@@ -143,4 +143,4 @@ Run `python3 bench/bench.py --save` on a tagged commit to record results in `ben
 - Queue wait (= `dequeue_ns − arrival_ns`) isolates mutex/condition-variable contention from actual book-traversal time. Under sequential single-client load, queue wait is near zero; it grows under concurrent multi-client load.
 - Run with a Release build (`cmake -B build -DCMAKE_BUILD_TYPE=Release`) for representative numbers; Debug builds add ~2–5× overhead.
 - `SocketNodelay=Y` is set in `config/exchange.cfg`. Without it, the two fill ExecReports generated per match trigger Nagle's algorithm and inflate match RTT from ~70 µs to ~41 ms.
-- The matching engine runs on a dedicated thread; the FIX gateway submits work via `std::queue + std::mutex`. At high message rates the queue mutex is the primary bottleneck, visible as elevated queue wait times.
+- The matching engine runs on a dedicated thread; the FIX gateway submits work via `RingBuffer<WorkItem, 4096>` (SPSC lock-free). At high message rates, elevated queue wait times reflect ring buffer back-pressure rather than mutex contention.

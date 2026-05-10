@@ -8,8 +8,6 @@ The exchange is configured via a QuickFIX-style INI file passed as the first arg
 
 The file has a `[DEFAULT]` section (values inherited by all sessions), one or more `[SESSION]` sections, and an `[EXCHANGE]` section for exchange-specific settings.
 
----
-
 ## [DEFAULT] Settings
 
 | Key | Example | Description |
@@ -25,8 +23,6 @@ The file has a `[DEFAULT]` section (values inherited by all sessions), one or mo
 | `ResetOnLogon` | `Y` | Reset sequence numbers when a client logs on. Useful during development. Set to `N` in production for session continuity. |
 | `ResetOnLogout` | `Y` | Reset sequence numbers on logout. Same tradeoff as above. |
 
----
-
 ## [SESSION] Settings
 
 `[SESSION]` blocks are optional. Each one pre-registers a static client CompID that can connect without going through `CLAIM-SESSION`. For most use cases the session pool (`SessionPool` in `[EXCHANGE]`) is sufficient and no `[SESSION]` blocks are needed.
@@ -39,8 +35,6 @@ The file has a `[DEFAULT]` section (values inherited by all sessions), one or mo
 ### Session pool (recommended)
 
 The session pool pre-allocates `N` anonymous slots (`S1`–`SN`) at startup. Clients call `CLAIM-SESSION` on the admin gateway to obtain a `SenderCompID`, connect to the FIX port using it, and return the slot with `RELEASE-SESSION` when done. Pool size is controlled by `SessionPool` in `[EXCHANGE]`.
-
----
 
 ## [EXCHANGE] Settings
 
@@ -55,8 +49,6 @@ The `[EXCHANGE]` section is not a standard QuickFIX section — it is parsed man
 | `SessionPool` | `8` | `0` | Number of additional FIX session slots to pre-allocate at startup (named `S1`–`SN`). Clients claim a slot via `CLAIM-SESSION` on the admin gateway before connecting. `0` disables the pool. |
 | `DatabasePath` | `store/exchange.db` | *(disabled)* | Path to the SQLite database file used for persistence. If set, resting orders, fills, cancels, and runtime symbol registrations are recorded. On restart the book is restored from this file. Omit to run without persistence (all state is lost on crash). The directory must exist; the file is created if absent. |
 
----
-
 ## [RISK] Settings
 
 The optional `[RISK]` section configures global pre-trade risk controls. All checks are applied in `FixGateway` before an order is submitted to the matching engine. A rejected order receives `ExecutionReport(ExecType=Rejected)` with the reason in tag 58. All limits default to `0` / `0.0` (disabled).
@@ -70,8 +62,6 @@ The optional `[RISK]` section configures global pre-trade risk controls. All che
 
 The admin gateway listens on `AdminPort` and accepts plain-text commands over TCP. Each command is a single line terminated by `\n`; the exchange replies with a single line. See [docs/MESSAGES.md](MESSAGES.md) for the full admin command reference.
 
----
-
 ## Runtime Directories
 
 | Path | Contents |
@@ -81,15 +71,11 @@ The admin gateway listens on `AdminPort` and accepts plain-text commands over TC
 
 Both directories default to relative paths from the working directory where you launch the binary.
 
----
-
 ## Data Dictionary
 
 `spec/FIX42.xml` is the canonical FIX 4.2 message specification from the QuickFIX project. QuickFIX validates every inbound and outbound message against this file. If you receive `Invalid message` session-level rejects, check that all required fields are present as defined in this XML.
 
 The file should not need modification for standard FIX 4.2 usage.
-
----
 
 ## Example config
 

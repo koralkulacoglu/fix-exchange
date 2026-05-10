@@ -2,8 +2,6 @@
 
 A single-process equity exchange written in C++. Clients connect over TCP using the FIX 4.2 protocol to submit orders and receive execution reports. Market data is broadcast over UDP multicast as binary packets. A price-time priority matching engine runs on a dedicated thread. Resting orders, fills, cancels, and runtime symbol registrations are persisted to SQLite so the book survives restarts and crashes. Pre-trade risk controls are enforced before orders reach the matching engine.
 
----
-
 ## Performance
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology and scenario descriptions. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for a history of performance improvements.
@@ -29,8 +27,6 @@ pip install rich matplotlib
 python3 bench/bench.py --save
 ```
 
----
-
 ## Dependencies
 
 | Dependency     | Version | Install                            |
@@ -46,8 +42,6 @@ python3 bench/bench.py --save
 ```bash
 sudo apt install libquickfix-dev libsqlite3-dev
 ```
-
----
 
 ## Architecture
 
@@ -71,8 +65,6 @@ flowchart LR
     Admin -->|"REGISTER"| ME
 ```
 
----
-
 ## Build
 
 ```bash
@@ -88,8 +80,6 @@ cmake --build build -j$(nproc)
 ```
 
 The binary is placed at `build/fix-exchange`.
-
----
 
 ## Running
 
@@ -107,8 +97,6 @@ To reset sequence numbers between runs, delete `store/`:
 rm -rf store/
 ```
 
----
-
 ## Trading UI
 
 A browser-based interface for placing orders and watching the live order book. See [docs/UI.md](docs/UI.md) for full details.
@@ -123,8 +111,6 @@ python3 ui/main.py        # → http://localhost:8080
 
 Each server process claims one FIX session from the pool. Run two instances on different ports to get two independent clients that can trade against each other.
 
----
-
 ## Testing
 
 The test suite manages the exchange process itself — no manual server start required:
@@ -134,8 +120,6 @@ python3 tests/run_all.py
 ```
 
 The binary must be built first. Tests connect over raw TCP on port 5001 using hand-rolled FIX framing with no external Python libraries. UI server tests additionally start a uvicorn subprocess on port 18080 and use `websockets` to connect.
-
----
 
 ## Configuration
 

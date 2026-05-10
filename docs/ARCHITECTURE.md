@@ -4,8 +4,6 @@
 
 A single-process equity exchange in C++ using the FIX 4.2 protocol. Four threads with a fixed topology; the matching engine is the only thread that touches order book state. Market data is broadcast via UDP multicast as binary packets rather than over FIX sessions. Order state is persisted to SQLite so the book survives restarts.
 
----
-
 ## Components
 
 ```mermaid
@@ -50,8 +48,6 @@ flowchart TD
     AG1 -->|registerSymbol| ME1
 ```
 
----
-
 ## Threading Model
 
 Four threads, fixed topology:
@@ -66,8 +62,6 @@ Four threads, fixed topology:
 `MarketDataPublisher` holds a single UDP multicast socket and an atomic sequence counter. It is called exclusively from the engine thread (fill/cancel/replace/rested callbacks), so no mutex is needed.
 
 The engine thread (via gateway callbacks) enqueues `PersistenceEvent` structs onto the persistence queue without blocking. The persistence thread wakes up, batches all pending events, and writes them in one `BEGIN … COMMIT`. This keeps disk I/O off the matching hot path at the cost of a small dual-write window: if the process crashes between an exec report being sent and the flush completing, the DB will not reflect that event and the order will re-appear as resting on recovery.
-
----
 
 ## FIX Message Types
 
@@ -95,15 +89,14 @@ Defined in `src/market_data/MarketDataEvent.h`. Packed struct, little-endian:
 | `qty`         | int32    | leaves_qty for book events; fill qty for `Trade`                                                            |
 | `exchange_id` | char[16] | NUL-padded                                                                                                  |
 
----
-
 ## Matching Engine
 
 ### Order Book (per symbol)
 
 ```
-Bids: std::map<double, std::deque<Order>, std::greater<>>   // highest price first
-Asks: std::map<double, std::deque<Order>>                   // lowest price first
+Bids: std::map<double, std::list<Order>, std::greater<>>   // highest price first
+Asks: std::map<double, std::list<Order>>                   // lowest price first
+order_index_: std::unordered_map<std::string, std::list<Order>::iterator>  // O(1) cancel
 ```
 
 ### Matching Logic
@@ -144,13 +137,9 @@ struct Order {
 };
 ```
 
----
-
 ## Symbol Registry
 
 Symbols are loaded at startup from the `[EXCHANGE]` section of the config file. `MatchingEngine` validates incoming orders against `valid_symbols_` (guarded by `symbols_mutex_`). Orders for unknown symbols are rejected with `ExecutionReport(Rejected)` in the gateway before they reach the engine. New symbols can be registered at runtime via the admin gateway (`REGISTER <symbol>`).
-
----
 
 ## Order ID Duality
 
@@ -159,9 +148,7 @@ Every order carries two IDs:
 - `clord_id` — FIX tag 11, client-assigned, used for cancel references
 - `exchange_id` — exchange-assigned (`EXCH-<seq>`), stable internal key
 
-`FixGateway` maintains three maps under `orders_mutex_`: `order_sessions_` (exchange*id → SessionID), `active_orders*`(exchange_id → Order), and`clord*to_exchange*` (clord_id → exchange_id).
-
----
+`FixGateway` maintains three maps under `orders_mutex_`: `order_sessions_` (exchange_id → SessionID), `active_orders_` (exchange_id → Order), and `clord_to_exchange_` (clord_id → exchange_id).
 
 ## Logon Sequence
 
@@ -172,8 +159,6 @@ On client logon, `FixGateway::onLogon` sends a sequence of `ExecutionReport` mes
 3. **ExecType=4 (Canceled)** — replayed for each historical cancel.
 
 No market data snapshot is sent; clients receive the live UDP multicast feed going forward.
-
----
 
 ## Key Design Decisions
 
