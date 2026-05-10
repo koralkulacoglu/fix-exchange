@@ -6,7 +6,9 @@ A single-process equity exchange written in C++. Clients connect over TCP using 
 
 ## Performance
 
-See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology and scenario descriptions.
+See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology and scenario descriptions. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for a history of performance improvements.
+
+**Note:** these benchmarks are run on WSL2, so absolute numbers are affected by scheduling jitter and are not representative of bare-metal performance. They're mainly useful for catching regressions across versions.
 
 RTT latency distribution across all scenarios (latest release):
 
