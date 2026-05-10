@@ -65,7 +65,11 @@ Four threads, fixed topology:
 
 `MarketDataPublisher` holds a single UDP multicast socket and an atomic sequence counter. It is called exclusively from the engine thread (fill/cancel/replace/rested callbacks), so no mutex is needed.
 
-The engine thread (via gateway callbacks) enqueues `PersistenceEvent` structs onto the persistence queue without blocking. The persistence thread wakes up, batches all pending events, and writes them in one `BEGIN … COMMIT`. This keeps disk I/O off the matching hot path at the cost of a small dual-write window: if the process crashes between an exec report being sent and the flush completing, the DB will not reflect that event and the order will re-appear as resting on recovery.
+The engine thread (via gateway callbacks) enqueues `PersistenceEvent` structs onto the persistence queue. The persistence thread wakes up, batches all pending events, and writes them in one `BEGIN … COMMIT`.
+
+**Fill and cancel events are flushed synchronously** before the `ExecutionReport` is sent to the client. `FixGateway::onFill` and `onCancel` push a sentinel `BARRIER` event immediately after the fill/cancel event, then block on a `std::future<void>` until the persistence thread signals it (via `std::promise::set_value()`) after the `COMMIT`. Only then is the exec report sent. This guarantees that if a client receives a fill or cancel confirmation, the database already reflects it — a hard crash immediately after cannot cause the order to reappear as resting on recovery.
+
+`RESTED` and `REPLACE` events remain asynchronous (5 ms batch window). If those writes are lost in a crash, the order simply does not reappear — a safe failure, since the client has not been told the order is done. This keeps disk I/O off the new-order submission path.
 
 ---
 
@@ -178,7 +182,7 @@ No market data snapshot is sent; clients receive the live UDP multicast feed goi
 ## Key Design Decisions
 
 - **Single-threaded matching engine** — no locking complexity on the hot path; the gateway posts work onto a queue consumed by one engine thread.
-- **Async persistence** — all SQLite writes happen on a dedicated thread. The engine never blocks on disk. Set `DatabasePath` in `[EXCHANGE]` to enable; omit for in-memory-only mode.
+- **Persistence durability** — SQLite writes happen on a dedicated thread. New-order and replace events are enqueued asynchronously (5 ms batch window) so the engine never blocks on disk for order submissions. Fill and cancel events are flushed synchronously before the exec report is sent, ensuring clients cannot receive a fill/cancel confirmation that the database does not yet reflect. Set `DatabasePath` in `[EXCHANGE]` to enable persistence; omit for in-memory-only mode.
 - **Crash recovery** — on startup, `resting_orders` is loaded into the engine before the FIX acceptor starts. Reconnecting clients receive `ExecType=I` status reports for their restored orders via `onLogon`.
 - **One order book per symbol** — `MatchingEngine` holds a `std::unordered_map<string, OrderBook>`.
 - **UDP multicast market data** — every book event emits a 46-byte binary `MdPacket` to a multicast group. Any number of subscribers receive the same feed with a single `sendto()`. No session management, no subscription protocol.

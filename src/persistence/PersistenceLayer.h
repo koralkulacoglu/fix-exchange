@@ -2,6 +2,8 @@
 #include "engine/Order.h"
 #include <sqlite3.h>
 #include <condition_variable>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -11,12 +13,13 @@
 namespace persistence {
 
 struct PersistenceEvent {
-    enum Type { RESTED, FILL, TAKER_FILL, CANCEL, REPLACE, SYMBOL } type;
+    enum Type { RESTED, FILL, TAKER_FILL, CANCEL, REPLACE, SYMBOL, BARRIER } type;
     engine::Order          order;       // RESTED
     int                    leaves_qty{0}; // RESTED, REPLACE
     engine::Fill           fill;        // FILL
     engine::ReplaceRequest req;         // REPLACE
     std::string            str_val;     // CANCEL: exchange_id; SYMBOL: symbol name
+    std::shared_ptr<std::promise<void>> barrier_promise; // BARRIER only
 };
 
 class PersistenceLayer {
@@ -48,6 +51,9 @@ public:
 
     // Non-blocking enqueue — called from engine/admin threads
     void push(PersistenceEvent evt);
+    // Blocking enqueue: returns only after all currently queued events (including this call's
+    // barrier) have been committed to the database. Called from engine thread on fill/cancel.
+    void flush_sync();
 
 private:
     sqlite3*                     db_{nullptr};

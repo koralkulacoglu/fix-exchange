@@ -82,6 +82,17 @@ def restart_exchange():
     start_exchange()
 
 
+def crash_exchange():
+    """Hard-kill (SIGKILL) the exchange with no opportunity to flush, then restart."""
+    global _proc
+    if _proc is not None:
+        _proc.kill()
+        _proc.wait()
+        _proc = None
+    time.sleep(0.2)
+    start_exchange()
+
+
 
 # ---------------------------------------------------------------------------
 # FIX framing

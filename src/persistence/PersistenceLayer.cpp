@@ -126,9 +126,23 @@ void PersistenceLayer::run() {
             }
             if (stop_ && batch.empty()) break;
         }
-        if (!batch.empty())
+        if (!batch.empty()) {
             flush(batch);
+            for (auto& evt : batch)
+                if (evt.type == PersistenceEvent::BARRIER && evt.barrier_promise)
+                    evt.barrier_promise->set_value();
+        }
     }
+}
+
+void PersistenceLayer::flush_sync() {
+    auto p = std::make_shared<std::promise<void>>();
+    auto fut = p->get_future();
+    PersistenceEvent barrier;
+    barrier.type = PersistenceEvent::BARRIER;
+    barrier.barrier_promise = std::move(p);
+    push(std::move(barrier));
+    fut.wait();
 }
 
 void PersistenceLayer::flush(std::vector<PersistenceEvent>& batch) {
@@ -283,6 +297,9 @@ void PersistenceLayer::applyEvent(const PersistenceEvent& evt) {
         sqlite3_step(s); sqlite3_finalize(s);
         break;
     }
+
+    case PersistenceEvent::BARRIER:
+        break;
     }
 }
 

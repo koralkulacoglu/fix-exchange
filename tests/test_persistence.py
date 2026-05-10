@@ -2,7 +2,7 @@ import time
 from helpers import (
     FixSession, claim_session, release_session,
     recv_exec, drain, now_str, admin_send,
-    restart_exchange,
+    restart_exchange, crash_exchange,
 )
 
 
@@ -221,11 +221,86 @@ def test_persistence_symbol_survives_restart():
         release_session(comp_id)
 
 
+def test_persistence_filled_order_not_restored_after_crash():
+    comp_id = claim_session()
+    try:
+        s = FixSession(sender=comp_id)
+        s.connect()
+        s.logon()
+        now = now_str()
+        s.send("D", {
+            "11": "CRASH-SELL-1",
+            "21": "1",
+            "55": "AAPL",
+            "54": "2",
+            "40": "2",
+            "44": "175.00",
+            "38": "3",
+            "60": now,
+        })
+        ack = recv_exec(s)
+        assert ack.get("150") == "0", f"Expected New ack, got {ack.get('150')}"
+        s.send("D", {
+            "11": "CRASH-BUY-1",
+            "21": "1",
+            "55": "AAPL",
+            "54": "1",
+            "40": "2",
+            "44": "175.00",
+            "38": "3",
+            "60": now,
+        })
+        recv_exec(s)  # New ack
+        fills = drain(s, timeout=0.5)
+        assert len(fills) >= 1, "Expected fill from crossing orders"
+        s.close()
+    finally:
+        release_session(comp_id)
+
+    # Hard kill immediately — under the old async code the 5ms flush would not
+    # have completed; the fix ensures the fill is already in the DB at this point.
+    crash_exchange()
+
+    comp_id2 = claim_session()
+    try:
+        s2 = FixSession(sender=comp_id2)
+        s2.connect()
+        s2.logon()
+        s2.send("D", {
+            "11": "CRASH-CHECK-1",
+            "21": "1",
+            "55": "AAPL",
+            "54": "1",
+            "40": "2",
+            "44": "175.00",
+            "38": "3",
+            "60": now_str(),
+        })
+        recv_exec(s2)  # New ack
+        fills = drain(s2, timeout=0.3)
+        assert len(fills) == 0, \
+            f"Filled order must not reappear in book after crash, got {len(fills)} fill(s)"
+        s2.send("F", {
+            "41": "CRASH-CHECK-1",
+            "11": "CRASH-CHECK-1-C",
+            "55": "AAPL",
+            "54": "1",
+            "38": "3",
+            "60": now_str(),
+        })
+        recv_exec(s2)
+        s2.logout()
+        s2.close()
+    finally:
+        release_session(comp_id2)
+
+
 TESTS = [
     ("Persistence → resting order survives exchange restart",           test_persistence_resting_survives_restart),
     ("Persistence → cancelled order not restored after restart",        test_persistence_cancelled_not_restored),
     ("Persistence → historical fills replay as ExecType=2 on reconnect", test_persistence_fill_history_on_reconnect),
     ("Persistence → runtime-registered symbol survives restart",        test_persistence_symbol_survives_restart),
+    ("Persistence → filled order not restored after hard crash",        test_persistence_filled_order_not_restored_after_crash),
 ]
 
 

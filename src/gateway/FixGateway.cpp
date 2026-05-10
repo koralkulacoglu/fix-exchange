@@ -311,6 +311,14 @@ void FixGateway::onCancel(const engine::CancelRequest& req, bool found) {
         }
     }
     if (found) {
+        if (persistence_) {
+            persistence::PersistenceEvent evt;
+            evt.type    = persistence::PersistenceEvent::CANCEL;
+            evt.str_val = req.orig_order_id;
+            evt.order   = order;
+            persistence_->push(std::move(evt));
+            persistence_->flush_sync();
+        }
         auto report = make_exec_report(order, ExecType::Canceled);
         FIX::Session::sendToTarget(report, session_id);
         if (req.arrival_ns > 0)
@@ -318,17 +326,24 @@ void FixGateway::onCancel(const engine::CancelRequest& req, bool found) {
                 std::chrono::steady_clock::now().time_since_epoch().count() - req.arrival_ns,
                 req.dequeue_ns - req.arrival_ns);
         publisher_.on_cancel(order);
-        if (persistence_) {
-            persistence::PersistenceEvent evt;
-            evt.type    = persistence::PersistenceEvent::CANCEL;
-            evt.str_val = req.orig_order_id;
-            evt.order   = order;
-            persistence_->push(std::move(evt));
-        }
     }
 }
 
 void FixGateway::onFill(const engine::Fill& maker, const engine::Fill& taker) {
+    if (persistence_) {
+        persistence::PersistenceEvent maker_evt;
+        maker_evt.type = persistence::PersistenceEvent::FILL;
+        maker_evt.fill = maker;
+        persistence_->push(std::move(maker_evt));
+
+        persistence::PersistenceEvent taker_evt;
+        taker_evt.type = persistence::PersistenceEvent::TAKER_FILL;
+        taker_evt.fill = taker;
+        persistence_->push(std::move(taker_evt));
+
+        persistence_->flush_sync();
+    }
+
     auto send_fill = [this](const engine::Fill& fill) {
         FIX::SessionID session_id;
         {
@@ -364,17 +379,6 @@ void FixGateway::onFill(const engine::Fill& maker, const engine::Fill& taker) {
     }
     risk_.on_trade(maker.symbol, maker.price);
     publisher_.on_fill(maker);
-    if (persistence_) {
-        persistence::PersistenceEvent maker_evt;
-        maker_evt.type = persistence::PersistenceEvent::FILL;
-        maker_evt.fill = maker;
-        persistence_->push(std::move(maker_evt));
-
-        persistence::PersistenceEvent taker_evt;
-        taker_evt.type = persistence::PersistenceEvent::TAKER_FILL;
-        taker_evt.fill = taker;
-        persistence_->push(std::move(taker_evt));
-    }
 }
 
 void FixGateway::onTIFCancel(const engine::Order& order) {
