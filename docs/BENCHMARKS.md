@@ -100,7 +100,7 @@ When the Release workflow completes successfully, `.github/workflows/benchmark.y
 **Before pushing a release**, start the instance manually — the workflow cannot start it, only stop it:
 
 ```bash
-aws ec2 start-instances --instance-ids i-0650c60581d0b8eed --region us-east-1
+aws ec2 start-instances --instance-ids i-0e85f6c77700bb182 --region us-east-1
 ```
 
 Or start it from the EC2 console. The workflow stops it automatically when done (even on failure).
@@ -142,7 +142,7 @@ bash bench/rebaseline.sh v1.11.2 v1.11.3
 
 | Item | Value |
 |------|-------|
-| Instance ID | `i-0650c60581d0b8eed` |
+| Instance ID | `i-0e85f6c77700bb182` |
 | Instance type | `c6i.metal` spot, us-east-1 |
 | Runner label | `aws-metal` |
 | IAM user | `fix-exchange-bench` (policy: `ec2:StopInstances` on this instance only) |
@@ -154,7 +154,7 @@ GitHub Secrets required (repo Settings → Secrets → Actions):
 | `AWS_ACCESS_KEY_ID` | IAM user access key |
 | `AWS_SECRET_ACCESS_KEY` | IAM user secret key |
 | `AWS_REGION` | `us-east-1` |
-| `BENCHMARK_INSTANCE_ID` | `i-0650c60581d0b8eed` |
+| `BENCHMARK_INSTANCE_ID` | `i-0e85f6c77700bb182` |
 
 To re-register the runner (e.g. after terminating and relaunching the instance):
 
