@@ -96,10 +96,14 @@ class FixSession:
         while True:
             if b"10=" in self.buf:
                 end = self.buf.index(b"10=")
-                soh = self.buf.index(b"\x01", end)
-                msg_bytes, self.buf = self.buf[:soh + 1], self.buf[soh + 1:]
-                ts = time.perf_counter_ns()
-                return msg_bytes, ts
+                try:
+                    soh = self.buf.index(b"\x01", end)
+                except ValueError:
+                    pass  # checksum field not fully received yet; read more data
+                else:
+                    msg_bytes, self.buf = self.buf[:soh + 1], self.buf[soh + 1:]
+                    ts = time.perf_counter_ns()
+                    return msg_bytes, ts
             chunk = self.sock.recv(8192)
             if not chunk:
                 raise ConnectionError("exchange closed connection")
