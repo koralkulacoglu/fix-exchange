@@ -44,13 +44,14 @@ python3 bench/bench.py [options]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--count N` | 500 | iterations per scenario |
+| `--count N` | 10000 | recorded iterations per scenario (plus ~10% warmup) |
 | `--scenario NAME` | all | `add`, `cancel`, `match`, `mixed`, or `all` |
 | `--out DIR` | `bench/bench_results` | where to write PNG charts |
 | `--no-spawn` | — | connect to an already-running exchange |
 | `--host` / `--port` | 127.0.0.1 / 5001 | FIX acceptor address |
 | `--admin-port` | 5002 | admin gateway port (for internal stats) |
-| `--save` | — | persist raw samples to `bench/results.db` and regenerate trend charts |
+| `--save` | — | persist raw samples to `bench/results.db` |
+| `--version-override V` | — | version string written to DB instead of `git describe` (used by `bench/rebaseline.sh`) |
 
 Charts are saved to `bench/bench_results/`.
 
@@ -76,28 +77,95 @@ Pre-loads N/2 resting orders to populate the book, then cancels all of them sequ
 | internal p50/p99 | exchange processing time (arrival → ExecReport send) |
 | queue wait p50 | time order spent waiting in engine queue |
 | exec time | internal − queue wait = pure book-matching time |
-| ops/sec | 1 / mean RTT latency, reported per scenario |
+| ops/sec | 1 / mean RTT latency — serial single-client throughput, not peak concurrent capacity |
 
 Internal stats are collected by the exchange process and queried via `STATS` on the admin port after each scenario. Raw nanosecond samples are returned and exact percentiles are computed by the benchmark script.
 
 ## Historical tracking (`--save`)
 
-Pass `--save` to persist raw latency samples to `bench/results.db` and immediately regenerate the trend charts. Intended to be run on each tagged release:
+Pass `--save` to persist raw latency samples to `bench/results.db`. Re-running on the same version overwrites the previous results for that version. Raw samples are stored per order per scenario so any percentile can be recomputed later.
 
-```bash
-git tag v1.11.0
-python3 bench/bench.py --save
-```
-
-Re-running `--save` on the same version overwrites the previous results for that version. Raw samples are stored per order per scenario so any percentile can be recomputed later.
-
-To regenerate trend charts from existing data without re-running the benchmark:
+`--save` does **not** regenerate trend charts. To update the charts from the stored DB:
 
 ```bash
 python3 bench/plot_history.py
 ```
 
 This produces `bench/bench_results/trend_p50.png` and `bench/bench_results/trend_ops.png`.
+
+### Automated CI
+
+On every release tag, `.github/workflows/benchmark.yml` runs automatically on a dedicated `c6i.metal` AWS spot instance (self-hosted runner labelled `aws-metal`). It builds a Release binary, runs all scenarios, commits the updated `results.db` back to `main`, then stops the instance.
+
+**Before pushing a release**, start the instance manually — the workflow cannot start it, only stop it:
+
+```bash
+aws ec2 start-instances --instance-ids i-0650c60581d0b8eed --region us-east-1
+```
+
+Or start it from the EC2 console. The workflow stops it automatically when done (even on failure).
+
+**What the workflow does automatically:**
+1. Checks out `main` (same commit as the release tag)
+2. Creates `.venv` if not present, installs Python deps
+3. Builds Release binary with `-march=native`
+4. Runs `bench/bench.py --save` (10k iterations + warmup per scenario)
+5. Commits `bench/results.db` to `main`
+6. Stops the EC2 instance
+
+**After the workflow completes**, pull `main` locally and regenerate charts:
+
+```bash
+git pull
+python3 bench/plot_history.py
+```
+
+#### Rebaselining after a methodology change
+
+If the benchmark methodology changes (iteration count, warmup, new scenarios), old DB entries are no longer comparable. SSH into the instance and run:
+
+```bash
+ssh -i ~/.ssh/fix-exchange-bench.pem ubuntu@<instance-ip>
+cd fix-exchange && git pull
+bash bench/rebaseline.sh
+```
+
+This checks out each old tag's source, builds it, and runs the current `bench.py` against it with `--version-override` so results are stored under the correct version string. Commit the updated `results.db` afterward.
+
+To rebaseline specific tags only:
+
+```bash
+bash bench/rebaseline.sh v1.11.2 v1.11.3
+```
+
+#### AWS + GitHub setup reference
+
+| Item | Value |
+|------|-------|
+| Instance ID | `i-0650c60581d0b8eed` |
+| Instance type | `c6i.metal` spot, us-east-1 |
+| Runner label | `aws-metal` |
+| IAM user | `fix-exchange-bench` (policy: `ec2:StopInstances` on this instance only) |
+
+GitHub Secrets required (repo Settings → Secrets → Actions):
+
+| Secret | Description |
+|--------|-------------|
+| `AWS_ACCESS_KEY_ID` | IAM user access key |
+| `AWS_SECRET_ACCESS_KEY` | IAM user secret key |
+| `AWS_REGION` | `us-east-1` |
+| `BENCHMARK_INSTANCE_ID` | `i-0650c60581d0b8eed` |
+
+To re-register the runner (e.g. after terminating and relaunching the instance):
+
+```bash
+ssh -i ~/.ssh/fix-exchange-bench.pem ubuntu@<new-instance-ip>
+cd actions-runner
+./config.sh --url https://github.com/koralkulacoglu/fix-exchange --token <token-from-github> --labels aws-metal --unattended --name fix-exchange-bench
+sudo ./svc.sh install && sudo ./svc.sh start
+```
+
+Get a fresh token from repo Settings → Actions → Runners → New self-hosted runner.
 
 ## Results
 
@@ -115,18 +183,18 @@ Run `python3 bench/bench.py` to generate current numbers.
 
 ![Internal vs RTT](../bench/bench_results/internal_vs_rtt.png)
 
-| scenario | n   | rtt p50  | rtt p99  | internal p50 | queue wait p50 | ops/sec |
-|----------|-----|----------|----------|--------------|----------------|---------|
-| add      | 500 | 68.1 µs  | 316.6 µs | 31.0 µs      | 0.0 µs         | 12,331  |
-| cancel   | 500 | 82.9 µs  | 368.1 µs | 48.6 µs      | 13.4 µs        | 10,925  |
-| match    | 500 | 135.2 µs | 274.1 µs | 102.6 µs     | 42.6 µs        | 7,081   |
-| mixed    | 500 | 72.6 µs  | 120.0 µs | 43.2 µs      | 13.1 µs        | 13,602  |
+| scenario | n     | rtt p50  | rtt p99  | internal p50 | queue wait p50 | ops/sec |
+|----------|-------|----------|----------|--------------|----------------|---------|
+| add      | 10000 | —        | —        | —            | —              | —       |
+| cancel   | 10000 | —        | —        | —            | —              | —       |
+| match    | 10000 | —        | —        | —            | —              | —       |
+| mixed    | 10000 | —        | —        | —            | —              | —       |
 
-*Release build, loopback TCP, WSL2. Add queue wait is 0 µs because the New ack is sent on the QuickFIX thread before the order reaches the engine queue. Cancel/mixed queue wait (~13 µs) reflects condition-variable wake-up; match is higher (~43 µs) because the engine is fully idle between iterations.*
+*Pending rebaseline run on bare-metal AWS. Previous WSL2 numbers are no longer comparable due to warmup and iteration count changes.*
 
 ## Historical trends
 
-Run `python3 bench/bench.py --save` on a tagged commit to record results in `bench/results.db` and regenerate these charts. Re-running on the same tag overwrites that version's data. The DB is committed to the repo so history accumulates across releases.
+Run `python3 bench/bench.py --save` on a tagged commit to record results in `bench/results.db`. Re-running on the same tag overwrites that version's data. The DB is committed to the repo so history accumulates across releases. Run `python3 bench/plot_history.py` to regenerate the charts below.
 
 **p50 Latency by Version** — RTT (solid) and internal processing time (dashed) per scenario per release. A downward trend means the exchange got faster; diverging RTT and internal lines indicate growing TCP/Python overhead relative to engine time.
 

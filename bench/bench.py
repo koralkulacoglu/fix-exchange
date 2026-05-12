@@ -8,12 +8,12 @@ Options:
     --host HOST        exchange host           (default: 127.0.0.1)
     --port PORT        FIX acceptor port       (default: 5001)
     --admin-port PORT  admin gateway port      (default: 5002)
-    --count N          iterations/scenario     (default: 500)
-    --scenario NAME    add|cancel|match|mixed|all  (default: all)
-    --out DIR          chart output directory  (default: docs/bench_results)
-    --no-spawn         connect to a running exchange instead of starting one
-    --save             persist results to SQLite on bench-history branch
-    --build-type TYPE  Release or Debug        (default: Release)
+    --count N             iterations/scenario     (default: 10000)
+    --scenario NAME       add|cancel|match|mixed|all  (default: all)
+    --out DIR             chart output directory  (default: bench/bench_results)
+    --no-spawn            connect to a running exchange instead of starting one
+    --save                persist results to bench/results.db
+    --version-override V  override git describe version stored in DB
 """
 
 import argparse
@@ -197,8 +197,21 @@ def fetch_stats(host: str, port: int) -> dict:
 
 # ── Scenarios ──────────────────────────────────────────────────────────────────
 
-def scenario_add(s: FixSession, count: int, symbol: str) -> list:
+WARMUP_RATIO = 0.1  # fraction of count run before recording; minimum 50 iterations
+
+
+def scenario_add(s: FixSession, count: int, symbol: str, reset_cb=None) -> list:
     """RTT: NewOrderSingle send → ExecReport(New). Uses non-crossing buy prices."""
+    warmup = max(50, int(count * WARMUP_RATIO))
+    for i in range(warmup):
+        s.send("D", {
+            "11": f"WU-ADD-{i}",
+            "21": "1", "55": symbol, "54": "1", "40": "2",
+            "44": "0.01", "38": "1", "60": _now_fix(),
+        })
+        _wait_exec(s, "0")
+    if reset_cb:
+        reset_cb()
     latencies = []
     for i in range(count):
         t0 = s.send_timed("D", {
@@ -211,8 +224,24 @@ def scenario_add(s: FixSession, count: int, symbol: str) -> list:
     return latencies
 
 
-def scenario_cancel(s: FixSession, count: int, symbol: str) -> list:
+def scenario_cancel(s: FixSession, count: int, symbol: str, reset_cb=None) -> list:
     """RTT: OrderCancelRequest send → ExecReport(Canceled)."""
+    warmup = max(50, int(count * WARMUP_RATIO))
+    for i in range(warmup):
+        clord = f"WU-CXL-{i}"
+        s.send("D", {
+            "11": clord,
+            "21": "1", "55": symbol, "54": "1", "40": "2",
+            "44": "0.01", "38": "1", "60": _now_fix(),
+        })
+        _wait_exec(s, "0")
+        s.send("F", {
+            "41": clord, "11": f"{clord}-CXL",
+            "55": symbol, "54": "1", "38": "1", "60": _now_fix(),
+        })
+        _wait_exec(s, "4")
+    if reset_cb:
+        reset_cb()
     latencies = []
     for i in range(count):
         clord = f"CXL-{i}"
@@ -231,8 +260,28 @@ def scenario_cancel(s: FixSession, count: int, symbol: str) -> list:
     return latencies
 
 
-def scenario_match(s: FixSession, count: int, symbol: str) -> list:
+def scenario_match(s: FixSession, count: int, symbol: str, reset_cb=None) -> list:
     """RTT: aggressive-buy send → Fill ExecReport (taker side)."""
+    warmup = max(50, int(count * WARMUP_RATIO))
+    for i in range(warmup):
+        s.send("D", {
+            "11": f"WU-MSELL-{i}",
+            "21": "1", "55": symbol, "54": "2", "40": "2",
+            "44": "100.00", "38": "1", "60": _now_fix(),
+        })
+        _wait_exec(s, "0")
+        mbuy = f"WU-MBUY-{i}"
+        s.send("D", {
+            "11": mbuy,
+            "21": "1", "55": symbol, "54": "1", "40": "2",
+            "44": "100.00", "38": "1", "60": _now_fix(),
+        })
+        while True:
+            msg, _ = s.recv_timed()
+            if msg.get("35") == "8" and msg.get("150") in ("1", "2") and msg.get("11") == mbuy:
+                break
+    if reset_cb:
+        reset_cb()
     latencies = []
     for i in range(count):
         s.send("D", {
@@ -258,8 +307,24 @@ def scenario_match(s: FixSession, count: int, symbol: str) -> list:
     return latencies
 
 
-def scenario_mixed(s: FixSession, count: int, symbol: str) -> list:
+def scenario_mixed(s: FixSession, count: int, symbol: str, reset_cb=None) -> list:
     """Cancel latency under a populated book (N/2 resting orders pre-loaded)."""
+    warmup = max(50, int(count * WARMUP_RATIO))
+    for i in range(warmup):
+        clord = f"WU-MIX-{i}"
+        s.send("D", {
+            "11": clord,
+            "21": "1", "55": symbol, "54": "1", "40": "2",
+            "44": "0.01", "38": "1", "60": _now_fix(),
+        })
+        _wait_exec(s, "0")
+        s.send("F", {
+            "41": clord, "11": f"{clord}-CXL",
+            "55": symbol, "54": "1", "38": "1", "60": _now_fix(),
+        })
+        _wait_exec(s, "4")
+    if reset_cb:
+        reset_cb()
     half = max(count // 2, 1)
     clords = [f"MIX-{i}" for i in range(half)]
     for i, clord in enumerate(clords):
@@ -509,10 +574,13 @@ def start_exchange(host: str, port: int) -> None:
 
 DB_PATH = "bench/results.db"
 
-def save_results(results: dict, out_dir: str) -> None:
-    git_version = subprocess.check_output(
-        ["git", "describe", "--tags", "--always"], stderr=subprocess.DEVNULL
-    ).decode().strip()
+def save_results(results: dict, version_override: str = None) -> None:
+    if version_override:
+        git_version = version_override
+    else:
+        git_version = subprocess.check_output(
+            ["git", "describe", "--tags", "--always"], stderr=subprocess.DEVNULL
+        ).decode().strip()
     git_commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
     ).decode().strip()
@@ -579,11 +647,6 @@ def save_results(results: dict, out_dir: str) -> None:
     con.close()
     print(f"  Results saved to {DB_PATH} (version={git_version})")
 
-    import sys as _sys
-    _sys.path.insert(0, os.path.dirname(__file__))
-    import plot_history
-    plot_history.generate_charts(DB_PATH, out_dir)
-
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
@@ -600,14 +663,17 @@ def main():
     ap.add_argument("--host",       default="127.0.0.1")
     ap.add_argument("--port",       type=int, default=5001)
     ap.add_argument("--admin-port", type=int, default=5002, dest="admin_port")
-    ap.add_argument("--count",      type=int, default=500)
-    ap.add_argument("--scenario",   default="all",
+    ap.add_argument("--count",            type=int, default=10000)
+    ap.add_argument("--scenario",         default="all",
                     choices=[*SCENARIOS, "all"])
-    ap.add_argument("--out",        default="bench/bench_results", metavar="DIR")
-    ap.add_argument("--no-spawn",   action="store_true",
+    ap.add_argument("--out",              default="bench/bench_results", metavar="DIR")
+    ap.add_argument("--no-spawn",         action="store_true",
                     help="connect to an already-running exchange")
-    ap.add_argument("--save",       action="store_true",
-                    help="persist results to bench/results.db and regenerate trend charts")
+    ap.add_argument("--save",             action="store_true",
+                    help="persist results to bench/results.db")
+    ap.add_argument("--version-override", default=None, metavar="VERSION",
+                    dest="version_override",
+                    help="version string stored in DB instead of git describe (for rebaselining)")
     args = ap.parse_args()
 
     to_run = list(SCENARIOS.items()) if args.scenario == "all" \
@@ -626,7 +692,8 @@ def main():
         s.logon()
 
         reset_stats(args.host, args.admin_port)
-        latencies = fn(s, args.count, symbol)
+        latencies = fn(s, args.count, symbol,
+                       reset_cb=lambda: reset_stats(args.host, args.admin_port))
         raw_stats = fetch_stats(args.host, args.admin_port)
 
         s.logout()
@@ -670,7 +737,7 @@ def main():
     save_charts(results, args.out)
 
     if args.save:
-        save_results(results, args.out)
+        save_results(results, version_override=args.version_override)
 
 if __name__ == "__main__":
     main()

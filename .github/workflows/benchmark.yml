@@ -1,0 +1,53 @@
+name: Benchmark
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  benchmark:
+    runs-on: [self-hosted, aws-metal]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python venv
+        run: |
+          if [ ! -d .venv ]; then
+            python3 -m venv .venv
+            . .venv/bin/activate
+            pip install -r requirements.txt -q
+          fi
+
+      - name: Build (Release)
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS='-march=native'
+          cmake --build build -j$(nproc)
+
+      - name: Run benchmark
+        run: |
+          . .venv/bin/activate
+          python3 bench/bench.py --save
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bench/results.db
+          git diff --cached --quiet || git commit -m "chore: benchmark results for ${{ github.ref_name }}"
+          git push origin main
+
+      - name: Stop instance
+        if: always()
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          aws ec2 stop-instances --instance-ids ${{ secrets.BENCHMARK_INSTANCE_ID }}
