@@ -95,29 +95,22 @@ This produces `bench/bench_results/trend_p50.png` and `bench/bench_results/trend
 
 ### Automated CI
 
-When the Release workflow completes successfully, `.github/workflows/benchmark.yml` runs automatically on a dedicated `c6i.metal` AWS spot instance (self-hosted runner labelled `aws-metal`). It builds a Release binary, runs all scenarios, commits the updated `results.db` back to `main`, then stops the instance.
-
-**Before pushing a release**, start the instance manually — the workflow cannot start it, only stop it:
-
-```bash
-aws ec2 start-instances --instance-ids i-0e85f6c77700bb182 --region us-east-1
-```
-
-Or start it from the EC2 console. The workflow stops it automatically when done (even on failure).
+When the Release workflow completes successfully, `.github/workflows/benchmark.yml` runs automatically on a dedicated `c6i.metal` AWS spot instance (self-hosted runner labelled `aws-metal`). No manual steps required.
 
 **What the workflow does automatically:**
-1. Checks out `main` (same commit as the release tag)
-2. Creates `.venv` if not present, installs Python deps
-3. Builds Release binary with `-march=native`
-4. Runs `bench/bench.py --save` (10k iterations + warmup per scenario)
-5. Commits `bench/results.db` to `main`
-6. Stops the EC2 instance
+1. Checks if HEAD is at a new release tag — exits early if not
+2. Starts the EC2 instance and waits for it to be ready
+3. Checks out `main`, sets up Python venv, installs deps
+4. Builds Release binary with `-march=native`
+5. Runs `bench/bench.py --save` (10k iterations + warmup per scenario)
+6. Generates trend charts via `plot_history.py`
+7. Commits `bench/results.db` and updated charts to `main`
+8. Stops the EC2 instance
 
-**After the workflow completes**, pull `main` locally and regenerate charts:
+**After the workflow completes**, pull `main` to get the updated results and charts:
 
 ```bash
 git pull
-python3 bench/plot_history.py
 ```
 
 #### Rebaselining after a methodology change
@@ -182,15 +175,6 @@ Run `python3 bench/bench.py` to generate current numbers.
 **Internal vs RTT** — compares three p50 numbers side-by-side for each scenario: client-perceived RTT, internal exchange processing time (arrival → ExecReport send), and queue wait (time the request sat in the engine queue waiting to be dequeued). The gap between RTT and internal is TCP loopback + Python overhead. The gap between internal and queue wait is pure book-matching execution time.
 
 ![Internal vs RTT](../bench/bench_results/internal_vs_rtt.png)
-
-| scenario | n     | rtt p50  | rtt p99  | internal p50 | queue wait p50 | ops/sec |
-|----------|-------|----------|----------|--------------|----------------|---------|
-| add      | 10000 | —        | —        | —            | —              | —       |
-| cancel   | 10000 | —        | —        | —            | —              | —       |
-| match    | 10000 | —        | —        | —            | —              | —       |
-| mixed    | 10000 | —        | —        | —            | —              | —       |
-
-*Pending rebaseline run on bare-metal AWS. Previous WSL2 numbers are no longer comparable due to warmup and iteration count changes.*
 
 ## Historical trends
 
