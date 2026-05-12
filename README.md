@@ -6,7 +6,7 @@ A single-process equity exchange written in C++. Clients connect over TCP using 
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology and scenario descriptions. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for a history of performance improvements.
 
-**Note:** these benchmarks are run on WSL2, so absolute numbers are affected by scheduling jitter and are not representative of bare-metal performance. They're mainly useful for catching regressions across versions.
+Benchmarks run automatically on AWS c6i.metal bare-metal after each release. Numbers reflect real hardware performance.
 
 RTT latency distribution across all scenarios (latest release):
 
@@ -23,8 +23,9 @@ To run the benchmark and record results for the current tagged version:
 
 ```bash
 . .venv/bin/activate
-pip install rich matplotlib
-python3 bench/bench.py --save
+pip install rich matplotlib numpy   # first time only
+python3 bench/bench.py --save       # records results to bench/results.db
+python3 bench/plot_history.py       # regenerates trend charts from DB
 ```
 
 ## Dependencies
@@ -37,7 +38,7 @@ python3 bench/bench.py --save
 | SQLite3        | 3.x     | `sudo apt install libsqlite3-dev`  |
 | OpenSSL        | any     | usually pre-installed              |
 
-### One-time setup (Ubuntu / WSL2)
+### One-time setup (Ubuntu)
 
 ```bash
 sudo apt install libquickfix-dev libsqlite3-dev

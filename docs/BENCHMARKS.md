@@ -37,7 +37,7 @@ sequenceDiagram
 
 ```bash
 . .venv/bin/activate
-pip install rich matplotlib   # first time only
+pip install rich matplotlib numpy   # first time only; not in requirements.txt
 
 python3 bench/bench.py [options]
 ```
@@ -171,7 +171,7 @@ Get a fresh token from repo Settings → Actions → Runners → New self-hosted
 
 Run `python3 bench/bench.py` to generate current numbers.
 
-**Latency CDF** — cumulative distribution of client-perceived RTT for each scenario. A curve shifted left means lower latency; a steeper slope means tighter distribution. The p50/p95/p99 reference lines show how the tail behaves under WSL2 scheduling jitter.
+**Latency CDF** — cumulative distribution of client-perceived RTT for each scenario. A curve shifted left means lower latency; a steeper slope means tighter distribution. The p50/p95/p99 reference lines show how the tail behaves.
 
 ![Latency CDF](../bench/bench_results/latency_cdf.png)
 
