@@ -95,7 +95,7 @@ This produces `bench/bench_results/trend_p50.png` and `bench/bench_results/trend
 
 ### Automated CI
 
-On every release tag, `.github/workflows/benchmark.yml` runs automatically on a dedicated `c6i.metal` AWS spot instance (self-hosted runner labelled `aws-metal`). It builds a Release binary, runs all scenarios, commits the updated `results.db` back to `main`, then stops the instance.
+When the Release workflow completes successfully, `.github/workflows/benchmark.yml` runs automatically on a dedicated `c6i.metal` AWS spot instance (self-hosted runner labelled `aws-metal`). It builds a Release binary, runs all scenarios, commits the updated `results.db` back to `main`, then stops the instance.
 
 **Before pushing a release**, start the instance manually — the workflow cannot start it, only stop it:
 
