@@ -18,7 +18,18 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Check for new release tag
+        id: tag_check
+        run: |
+          if git describe --tags --exact-match HEAD 2>/dev/null; then
+            echo "is_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_release=false" >> $GITHUB_OUTPUT
+            echo "No new release tag at HEAD — skipping benchmark"
+          fi
+
       - name: Set up Python venv
+        if: steps.tag_check.outputs.is_release == 'true'
         run: |
           if [ ! -d .venv ]; then
             python3 -m venv .venv
@@ -27,21 +38,25 @@ jobs:
           pip install -r requirements.txt matplotlib numpy -q
 
       - name: Build (Release)
+        if: steps.tag_check.outputs.is_release == 'true'
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS='-march=native'
           cmake --build build -j$(nproc)
 
       - name: Run benchmark
+        if: steps.tag_check.outputs.is_release == 'true'
         run: |
           . .venv/bin/activate
           python3 bench/bench.py --save
 
       - name: Generate charts
+        if: steps.tag_check.outputs.is_release == 'true'
         run: |
           . .venv/bin/activate
           python3 bench/plot_history.py
 
       - name: Commit results
+        if: steps.tag_check.outputs.is_release == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
