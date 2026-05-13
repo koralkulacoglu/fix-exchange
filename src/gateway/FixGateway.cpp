@@ -18,7 +18,11 @@ FixGateway::FixGateway(engine::MatchingEngine& engine,
                        persistence::PersistenceLayer* persistence,
                        risk::RiskConfig risk_cfg)
     : engine_(engine), publisher_(publisher), persistence_(persistence),
-      risk_(risk_cfg) {}
+      risk_(risk_cfg) {
+    order_sessions_.reserve(16384);
+    clord_to_exchange_.reserve(16384);
+    active_orders_.reserve(16384);
+}
 
 void FixGateway::restoreOrders(const std::vector<engine::Order>& orders, int max_seq) {
     std::lock(routing_mutex_, orders_mutex_);

@@ -4,6 +4,9 @@ A log of performance-focused changes made to the exchange — what was changed, 
 
 ## Changes
 
+- **Pre-reserve flat_hash_maps at startup** (#55, #57)  
+  `order_index_` in `OrderBook` and the three routing maps in `FixGateway` (`order_sessions_`, `clord_to_exchange_`, `active_orders_`) are reserved to 16384 entries at construction. Pays the page-fault cost at startup before any client connects, eliminating rehash spikes on the matching and fill callback paths.
+
 - **abseil btree_map + flat_hash_map** (#43)  
   Replaced `std::map` price-level maps in `OrderBook` with `absl::btree_map`, which packs multiple keys per B-tree node and reduces pointer hops and TLB pressure on every match. Replaced all `std::unordered_map` instances (`order_index_`, `books_`, gateway routing maps, risk engine) with `absl::flat_hash_map`, which uses open addressing in a flat array instead of separate-chaining with per-bucket pointers. Most visible on the `mixed` scenario (large resting book + cancels).
 
