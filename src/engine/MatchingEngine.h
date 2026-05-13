@@ -8,7 +8,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
-#include <unordered_map>
+#include <absl/container/flat_hash_map.h>
 #include <unordered_set>
 #include <vector>
 
@@ -64,7 +64,7 @@ private:
     TIFCancelCallback on_tif_cancel_;
     ReplaceCallback   on_replace_;
     RestingCallback   on_order_rested_;
-    std::unordered_map<std::string, OrderBook> books_;
+    absl::flat_hash_map<std::string, OrderBook> books_;
 
     mutable std::mutex symbols_mutex_;
     std::unordered_set<std::string> valid_symbols_;

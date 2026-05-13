@@ -37,6 +37,7 @@ python3 bench/plot_history.py       # regenerates trend charts from DB
 | QuickFIX       | 1.14+   | `sudo apt install libquickfix-dev` |
 | SQLite3        | 3.x     | `sudo apt install libsqlite3-dev`  |
 | OpenSSL        | any     | usually pre-installed              |
+| abseil-cpp     | 20240722.0 | fetched automatically by CMake  |
 
 ### One-time setup (Ubuntu)
 

@@ -1,7 +1,7 @@
 #pragma once
+#include <absl/container/flat_hash_map.h>
 #include <mutex>
 #include <string>
-#include <unordered_map>
 
 namespace risk {
 
@@ -28,7 +28,7 @@ private:
 
     RiskConfig cfg_;
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, double> last_price_;
+    absl::flat_hash_map<std::string, double> last_price_;
 };
 
 } // namespace risk

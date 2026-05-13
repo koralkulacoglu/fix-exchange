@@ -14,6 +14,7 @@
 #include <quickfix/fix42/NewOrderSingle.h>
 #include <quickfix/fix42/OrderCancelReplaceRequest.h>
 #include <quickfix/fix42/OrderCancelRequest.h>
+#include <absl/container/flat_hash_map.h>
 #include <unordered_set>
 #include <atomic>
 #include <mutex>
@@ -75,11 +76,11 @@ private:
     std::atomic<int> order_seq_{0};
 
     std::mutex routing_mutex_;                                              // guards order_sessions_ + clord_to_exchange_
-    std::unordered_map<std::string, FIX::SessionID>   order_sessions_;   // exchange_id → session
-    std::unordered_map<std::string, std::string>      clord_to_exchange_; // clord_id → exchange_id
+    absl::flat_hash_map<std::string, FIX::SessionID>   order_sessions_;   // exchange_id → session
+    absl::flat_hash_map<std::string, std::string>      clord_to_exchange_; // clord_id → exchange_id
 
     std::mutex orders_mutex_;                                               // guards active_orders_
-    std::unordered_map<std::string, engine::Order>    active_orders_;    // exchange_id → order
+    absl::flat_hash_map<std::string, engine::Order>    active_orders_;    // exchange_id → order
 };
 
 } // namespace gateway

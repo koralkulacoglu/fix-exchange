@@ -1,10 +1,10 @@
 #pragma once
 #include "Order.h"
+#include <absl/container/btree_map.h>
+#include <absl/container/flat_hash_map.h>
 #include <functional>
 #include <list>
-#include <map>
 #include <string>
-#include <unordered_map>
 
 namespace engine {
 
@@ -32,9 +32,9 @@ private:
 
     std::string symbol_;
     FillCallback on_fill_;
-    std::map<double, std::list<Order>, std::greater<double>> bids_;
-    std::map<double, std::list<Order>> asks_;
-    std::unordered_map<std::string, std::list<Order>::iterator> order_index_;
+    absl::btree_map<double, std::list<Order>, std::greater<double>> bids_;
+    absl::btree_map<double, std::list<Order>> asks_;
+    absl::flat_hash_map<std::string, std::list<Order>::iterator> order_index_;
     long long exec_seq_{0};
 };
 

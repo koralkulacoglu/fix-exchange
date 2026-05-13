@@ -4,6 +4,9 @@ A log of performance-focused changes made to the exchange — what was changed, 
 
 ## Changes
 
+- **abseil btree_map + flat_hash_map** (#43)  
+  Replaced `std::map` price-level maps in `OrderBook` with `absl::btree_map`, which packs multiple keys per B-tree node and reduces pointer hops and TLB pressure on every match. Replaced all `std::unordered_map` instances (`order_index_`, `books_`, gateway routing maps, risk engine) with `absl::flat_hash_map`, which uses open addressing in a flat array instead of separate-chaining with per-bucket pointers. Most visible on the `mixed` scenario (large resting book + cancels).
+
 - **O(1) order cancel** (#8)  
   Replaced `std::deque<Order>` per price level with `std::list<Order>` + an `order_index_` map (exchange_id → list iterator). Cancel went from a full O(n) scan-and-rebuild of the deque to three O(1) pointer operations.
 

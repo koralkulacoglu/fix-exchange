@@ -94,9 +94,9 @@ Defined in `src/market_data/MarketDataEvent.h`. Packed struct, little-endian:
 ### Order Book (per symbol)
 
 ```
-Bids: std::map<double, std::list<Order>, std::greater<>>   // highest price first
-Asks: std::map<double, std::list<Order>>                   // lowest price first
-order_index_: std::unordered_map<std::string, std::list<Order>::iterator>  // O(1) cancel
+Bids: absl::btree_map<double, std::list<Order>, std::greater<>>   // highest price first
+Asks: absl::btree_map<double, std::list<Order>>                   // lowest price first
+order_index_: absl::flat_hash_map<std::string, std::list<Order>::iterator>  // O(1) cancel
 ```
 
 ### Matching Logic
@@ -165,6 +165,6 @@ No market data snapshot is sent; clients receive the live UDP multicast feed goi
 - **Single-threaded matching engine** — no locking complexity on the hot path; the gateway posts work onto a queue consumed by one engine thread.
 - **Async persistence** — all SQLite writes happen on a dedicated thread. The engine never blocks on disk. Set `DatabasePath` in `[EXCHANGE]` to enable; omit for in-memory-only mode.
 - **Crash recovery** — on startup, `resting_orders` is loaded into the engine before the FIX acceptor starts. Reconnecting clients receive `ExecType=I` status reports for their restored orders via `onLogon`.
-- **One order book per symbol** — `MatchingEngine` holds a `std::unordered_map<string, OrderBook>`.
+- **One order book per symbol** — `MatchingEngine` holds an `absl::flat_hash_map<string, OrderBook>`.
 - **UDP multicast market data** — every book event emits a 46-byte binary `MdPacket` to a multicast group. Any number of subscribers receive the same feed with a single `sendto()`. No session management, no subscription protocol.
 - **ExecutionReport to parties only** — fill `ExecutionReport` messages go to the maker and taker over their FIX sessions; book-level market data goes to the multicast group.
