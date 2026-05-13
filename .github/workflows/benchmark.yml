@@ -75,7 +75,7 @@ jobs:
 
       - name: Run benchmark
         run: |
-          sudo chrt -f 99 -p $$
+          sudo chrt -f -p 99 $$
           .venv/bin/python3 bench/bench.py --save
 
       - name: Generate charts
