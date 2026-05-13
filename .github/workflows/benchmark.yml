@@ -52,6 +52,9 @@ jobs:
     needs: start
     runs-on: [self-hosted, aws-metal]
     steps:
+      - name: Clean root-owned workspace leftovers
+        run: sudo rm -rf log/ store/
+
       - uses: actions/checkout@v4
         with:
           ref: main
@@ -72,7 +75,8 @@ jobs:
 
       - name: Run benchmark
         run: |
-          sudo chrt -f 99 .venv/bin/python3 bench/bench.py --save
+          sudo chrt -f 99 -p $$
+          .venv/bin/python3 bench/bench.py --save
 
       - name: Generate charts
         run: |
