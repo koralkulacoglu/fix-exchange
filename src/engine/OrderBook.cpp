@@ -5,7 +5,9 @@
 namespace engine {
 
 OrderBook::OrderBook(std::string symbol, FillCallback on_fill)
-    : symbol_(std::move(symbol)), on_fill_(std::move(on_fill)) {}
+    : symbol_(std::move(symbol)), on_fill_(std::move(on_fill)) {
+    order_index_.reserve(16384);
+}
 
 void OrderBook::restore(Order order) {
     if (order.side == '1') {
