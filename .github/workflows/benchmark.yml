@@ -68,8 +68,7 @@ jobs:
 
       - name: Run benchmark
         run: |
-          . .venv/bin/activate
-          python3 bench/bench.py --save
+          sudo chrt -f 99 .venv/bin/python3 bench/bench.py --save
 
       - name: Generate charts
         run: |
