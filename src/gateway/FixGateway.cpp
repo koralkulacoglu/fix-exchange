@@ -252,6 +252,7 @@ void FixGateway::onReplace(const engine::ReplaceRequest& req, bool found, int ne
     FIX::SessionID session_id;
     engine::Order order;
     double order_old_price = 0.0;
+    bool send_reject = false;
     {
         std::lock(routing_mutex_, orders_mutex_);
         std::lock_guard<std::mutex> rl(routing_mutex_, std::adopt_lock);
@@ -262,26 +263,29 @@ void FixGateway::onReplace(const engine::ReplaceRequest& req, bool found, int ne
         session_id = sit->second;
 
         if (!found) {
-            auto reject = make_cancel_reject(req.new_clord_id, req.old_clord_id,
-                                             req.orig_order_id, "Order not found in book");
-            FIX::Session::sendToTarget(reject, session_id);
-            return;
-        }
+            send_reject = true;
+        } else {
+            double old_price = oit->second.price;
+            clord_to_exchange_.erase(req.old_clord_id);
+            clord_to_exchange_.emplace(req.new_clord_id, req.orig_order_id);
+            oit->second.clord_id   = req.new_clord_id;
+            oit->second.price      = req.new_price;
+            oit->second.qty        = req.new_qty;
+            oit->second.leaves_qty = std::max(0, new_leaves_qty);
+            order = oit->second;
 
-        double old_price = oit->second.price;
-        clord_to_exchange_.erase(req.old_clord_id);
-        clord_to_exchange_.emplace(req.new_clord_id, req.orig_order_id);
-        oit->second.clord_id   = req.new_clord_id;
-        oit->second.price      = req.new_price;
-        oit->second.qty        = req.new_qty;
-        oit->second.leaves_qty = std::max(0, new_leaves_qty);
-        order = oit->second;
-
-        if (new_leaves_qty == 0) {
-            order_sessions_.erase(sit);
-            active_orders_.erase(oit);
+            if (new_leaves_qty == 0) {
+                order_sessions_.erase(sit);
+                active_orders_.erase(oit);
+            }
+            order_old_price = old_price;
         }
-        order_old_price = old_price;
+    }
+    if (send_reject) {
+        auto reject = make_cancel_reject(req.new_clord_id, req.old_clord_id,
+                                         req.orig_order_id, "Order not found in book");
+        FIX::Session::sendToTarget(reject, session_id);
+        return;
     }
     auto report = make_exec_report(order, ExecType::Replaced);
     report.set(FIX::OrigClOrdID(req.old_clord_id));
