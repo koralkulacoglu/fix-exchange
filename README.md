@@ -74,7 +74,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j$(nproc)
 ```
 
-For a release build:
+For a release build (targets c6i.metal / Ice Lake Xeon — run on the server, not locally):
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release

@@ -101,7 +101,7 @@ When the Release workflow completes successfully, `.github/workflows/benchmark.y
 1. Checks if HEAD is at a new release tag — exits early if not
 2. Starts the EC2 instance and waits for it to be ready
 3. Checks out `main`, sets up Python venv, installs deps
-4. Builds Release binary with `-march=native`
+4. Builds Release binary with `-march=icelake-server` (set in CMakeLists.txt)
 5. Runs `bench/bench.py --save` (10k iterations + warmup per scenario)
 6. Generates trend charts via `plot_history.py`
 7. Commits `bench/results.db` and updated charts to `main`

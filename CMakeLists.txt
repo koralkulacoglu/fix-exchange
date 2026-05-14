@@ -35,4 +35,9 @@ target_link_libraries(fix-exchange PRIVATE
     absl::flat_hash_map
 )
 
-target_compile_options(fix-exchange PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(fix-exchange PRIVATE
+    -Wall -Wextra -Wpedantic
+    $<$<CONFIG:Release>:-march=icelake-server -funroll-loops -fno-semantic-interposition>
+)
+
+set_property(TARGET fix-exchange PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
