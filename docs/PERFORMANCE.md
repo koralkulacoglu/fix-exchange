@@ -4,6 +4,9 @@ A log of performance-focused changes made to the exchange — what was changed, 
 
 ## Changes
 
+- **Pure spin idle loop in engine thread** (#66)  
+  Replaced `idle_cv_.wait()` (a `futex_wait` syscall, ~1–5µs per wakeup) with a tight `_mm_pause()` spin loop. With a dedicated core and `SCHED_FIFO` already in place, sleeping is pure overhead — the core has nothing else to run. Removes `idle_mutex_` and `idle_cv_` from the engine entirely and eliminates the `notify_one()` call from every `submit()`/`cancel()`/`replace()` on the producer side. Stop semantics preserved: the loop exits only when `stop_` is set and the queue is fully drained.
+
 - **Release locks before sendToTarget in onReplace error path** (#64)  
   `onReplace` was calling `FIX::Session::sendToTarget` (socket I/O + QuickFIX session mutex) while holding both `routing_mutex_` and `orders_mutex_` on the `!found` rejection path. Moved the send outside the lock scope so the QuickFIX thread is not blocked from accepting new orders during reject reporting. `onFill` and `onCancel` were already correct.
 

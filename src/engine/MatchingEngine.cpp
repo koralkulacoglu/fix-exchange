@@ -7,6 +7,9 @@
 #include <sched.h>
 #include <cstdio>
 #endif
+#ifdef __x86_64__
+#include <immintrin.h>
+#endif
 
 namespace engine {
 
@@ -59,7 +62,6 @@ void MatchingEngine::start(int core) {
 
 void MatchingEngine::stop() {
     stop_.store(true, std::memory_order_release);
-    idle_cv_.notify_one();
     if (thread_.joinable())
         thread_.join();
 }
@@ -70,7 +72,6 @@ void MatchingEngine::submit(Order order) {
     item.order = std::move(order);
     while (!queue_.push(std::move(item)))
         std::this_thread::yield();
-    idle_cv_.notify_one();
 }
 
 void MatchingEngine::requestSnapshot(SnapshotCallback cb) {
@@ -79,7 +80,6 @@ void MatchingEngine::requestSnapshot(SnapshotCallback cb) {
     item.snapshot_cb = std::move(cb);
     while (!queue_.push(std::move(item)))
         std::this_thread::yield();
-    idle_cv_.notify_one();
 }
 
 void MatchingEngine::replace(ReplaceRequest req) {
@@ -88,7 +88,6 @@ void MatchingEngine::replace(ReplaceRequest req) {
     item.replace_req = std::move(req);
     while (!queue_.push(std::move(item)))
         std::this_thread::yield();
-    idle_cv_.notify_one();
 }
 
 void MatchingEngine::cancel(CancelRequest req) {
@@ -97,7 +96,6 @@ void MatchingEngine::cancel(CancelRequest req) {
     item.cancel_req = std::move(req);
     while (!queue_.push(std::move(item)))
         std::this_thread::yield();
-    idle_cv_.notify_one();
 }
 
 void MatchingEngine::run() {
@@ -116,13 +114,13 @@ void MatchingEngine::run() {
     }
 #endif
     while (true) {
+        if (stop_.load(std::memory_order_acquire) && queue_.empty())
+            break;
         WorkItem item;
         if (!queue_.pop(item)) {
-            std::unique_lock<std::mutex> lock(idle_mutex_);
-            idle_cv_.wait(lock, [this] {
-                return stop_.load(std::memory_order_acquire) || !queue_.empty();
-            });
-            if (stop_.load(std::memory_order_acquire) && queue_.empty()) break;
+#ifdef __x86_64__
+            _mm_pause();
+#endif
             continue;
         }
 

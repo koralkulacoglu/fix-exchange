@@ -3,7 +3,6 @@
 #include "OrderBook.h"
 #include "RingBuffer.h"
 #include <atomic>
-#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -70,8 +69,6 @@ private:
     std::unordered_set<std::string> valid_symbols_;
 
     RingBuffer<WorkItem, kQueueSize> queue_;
-    std::mutex idle_mutex_;
-    std::condition_variable idle_cv_;
     std::atomic<bool> stop_{false};
     std::thread thread_;
     int core_ = -1;
