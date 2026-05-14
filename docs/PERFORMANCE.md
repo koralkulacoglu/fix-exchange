@@ -1,8 +1,14 @@
 # Performance History
 
-A log of performance-focused changes made to the exchange — what was changed, why, and which issue it came from.
+A log of performance-focused changes made to the exchange — what was changed, why, and which issue it came from. Entries are in reverse chronological order (most recent first).
 
 ## Changes
+
+- **Engine thread SCHED_FIFO scheduling** (#65)  
+  The engine thread now calls `pthread_setschedparam(SCHED_FIFO, priority=1)` at startup alongside the existing CPU affinity call. This prevents the OS from preempting the engine mid-match under normal load, eliminating the class of p99/p999 latency spikes caused by scheduler interference on the engine core. Requires `CAP_SYS_NICE`; degrades gracefully otherwise. Bench launch updated from `chrt -o 0` to `chrt -f 1`.
+
+- **Release build: target ISA, LTO, and loop hardening** (#62)  
+  Release builds now specify `-march=icelake-server` (targeting the c6i.metal deployment host), enabling AVX-512 and Ice Lake-specific instruction selection. Added `-funroll-loops` and `-fno-semantic-interposition`, and enabled full LTO (`INTERPROCEDURAL_OPTIMIZATION`) so the compiler can inline and optimize across translation unit boundaries at link time. Debug builds are unaffected.
 
 - **Pre-reserve flat_hash_maps at startup** (#55, #57)  
   `order_index_` in `OrderBook` and the three routing maps in `FixGateway` (`order_sessions_`, `clord_to_exchange_`, `active_orders_`) are reserved to 16384 entries at construction. Pays the page-fault cost at startup before any client connects, eliminating rehash spikes on the matching and fill callback paths.
