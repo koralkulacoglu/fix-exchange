@@ -148,7 +148,7 @@ Every order carries two IDs:
 - `clord_id` — FIX tag 11, client-assigned, used for cancel references
 - `exchange_id` — exchange-assigned (`EXCH-<seq>`), stable internal key
 
-`FixGateway` maintains three maps under `orders_mutex_`: `order_sessions_` (exchange_id → SessionID), `active_orders_` (exchange_id → Order), and `clord_to_exchange_` (clord_id → exchange_id).
+`FixGateway` maintains three maps across two mutexes: `routing_mutex_` guards `order_sessions_` (exchange_id → SessionID) and `clord_to_exchange_` (clord_id → exchange_id); `orders_mutex_` guards `active_orders_` (exchange_id → Order).
 
 ## Logon Sequence
 
