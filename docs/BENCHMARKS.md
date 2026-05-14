@@ -105,7 +105,6 @@ When the Release workflow completes successfully, `.github/workflows/benchmark.y
 5. Runs `bench/bench.py --save` (10k iterations + warmup per scenario)
 6. Generates trend charts via `plot_history.py`
 7. Commits `bench/results.db` and updated charts to `main`
-8. Stops the EC2 instance
 
 **After the workflow completes**, pull `main` to get the updated results and charts:
 
