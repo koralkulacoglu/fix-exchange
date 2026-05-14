@@ -4,6 +4,9 @@ A log of performance-focused changes made to the exchange — what was changed, 
 
 ## Changes
 
+- **Release locks before sendToTarget in onReplace error path** (#64)  
+  `onReplace` was calling `FIX::Session::sendToTarget` (socket I/O + QuickFIX session mutex) while holding both `routing_mutex_` and `orders_mutex_` on the `!found` rejection path. Moved the send outside the lock scope so the QuickFIX thread is not blocked from accepting new orders during reject reporting. `onFill` and `onCancel` were already correct.
+
 - **Engine thread SCHED_FIFO scheduling** (#65)  
   The engine thread now calls `pthread_setschedparam(SCHED_FIFO, priority=1)` at startup alongside the existing CPU affinity call. This prevents the OS from preempting the engine mid-match under normal load, eliminating the class of p99/p999 latency spikes caused by scheduler interference on the engine core. Requires `CAP_SYS_NICE`; degrades gracefully otherwise. Bench launch updated from `chrt -o 0` to `chrt -f 1`.
 
