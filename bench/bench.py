@@ -559,7 +559,7 @@ def save_charts(results: dict, out_dir: str) -> None:
 
 def start_exchange(host: str, port: int) -> None:
     proc = subprocess.Popen(
-        ["numactl", "--cpunodebind=1", "--membind=1", "chrt", "-o", "0", EXCHANGE_BIN, EXCHANGE_CFG],
+        ["numactl", "--cpunodebind=1", "--membind=1", "chrt", "-f", "1", EXCHANGE_BIN, EXCHANGE_CFG],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

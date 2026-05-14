@@ -5,6 +5,7 @@
 #ifdef __linux__
 #include <pthread.h>
 #include <sched.h>
+#include <cstdio>
 #endif
 
 namespace engine {
@@ -106,6 +107,12 @@ void MatchingEngine::run() {
         CPU_ZERO(&cpuset);
         CPU_SET(core_, &cpuset);
         pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    }
+    {
+        sched_param sp{};
+        sp.sched_priority = 1;
+        if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0)
+            fprintf(stderr, "[engine] SCHED_FIFO unavailable (needs CAP_SYS_NICE) — running SCHED_OTHER\n");
     }
 #endif
     while (true) {
